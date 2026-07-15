@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 import { storageGet, storageSet } from "./storage.js";
-import { signUp, signIn, signOut, getSession, onAuthStateChange } from "./auth.js";
+import { signUp, signIn, signOut, getSession, onAuthStateChange, isValidUsername, sessionUsername } from "./auth.js";
+import { dayKind, holidayName } from "./holidays.js";
+import logoUrl from "./assets/logo.png";
 import "./App.css";
 
 export default function App() {
@@ -57,7 +59,10 @@ export default function App() {
         viewDate: todayStr(),
         setupDoTab: '1',
         creatingBranch: false,
-        newBranchDraft: ''
+        newBranchDraft: '',
+        calMode: 'year',
+        calYear: new Date().getFullYear(),
+        calMonth: new Date().getMonth()
       };
 
       const bk = slug => `branch__${slug}__`;
@@ -181,6 +186,7 @@ export default function App() {
         document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === STATE.tab));
         const main = document.getElementById('main');
         if (STATE.tab === 'today') main.innerHTML = renderToday();
+        else if (STATE.tab === 'calendar') main.innerHTML = renderCalendar();
         else if (STATE.tab === 'subjects') main.innerHTML = renderSubjects();
         else if (STATE.tab === 'setup') main.innerHTML = renderSetup();
         else if (STATE.tab === 'assignments') main.innerHTML = renderAssignments();
@@ -192,7 +198,7 @@ export default function App() {
           <div class="app with-nav" id="app">
             <div class="topbar">
               <div class="brand">
-                <div class="brand-mark">AT</div>
+                <div class="brand-mark"><img src="${logoUrl}" alt="" /></div>
                 <div>
                   <div class="brand-name">My Attendance Tracker</div>
                   <div class="brand-sub">${esc(branchName(STATE.profile.branch))}</div>
@@ -202,6 +208,7 @@ export default function App() {
             <main id="main"></main>
             <div class="navbar" id="navbar">
               <button class="nav-btn" data-action="nav-tab" data-tab="today"><span class="ic">◐</span><span class="lb">Today</span></button>
+              <button class="nav-btn" data-action="nav-tab" data-tab="calendar"><span class="ic">▦</span><span class="lb">Calendar</span></button>
               <button class="nav-btn" data-action="nav-tab" data-tab="subjects"><span class="ic">▤</span><span class="lb">Subjects</span></button>
               <button class="nav-btn" data-action="nav-tab" data-tab="setup"><span class="ic">⚙</span><span class="lb">Timetable</span></button>
               <button class="nav-btn" data-action="nav-tab" data-tab="assignments"><span class="ic">✎</span><span class="lb">Tasks</span></button>
@@ -216,11 +223,11 @@ export default function App() {
         const isLogin = STATE.authMode === 'login';
         return `
           <div class="onboard-wrap">
-            <div class="onboard-logo">AT</div>
+            <div class="onboard-logo"><img src="${logoUrl}" alt="" /></div>
             <h1 class="onboard-title">My Attendance Tracker</h1>
             <p class="onboard-sub">${isLogin ? 'Log in to see your classes, attendance and assignments.' : 'Create an account to get started — your data follows you across devices.'}</p>
 
-            <div class="field"><label>Email</label><input type="text" id="authEmail" placeholder="you@example.com"></div>
+            <div class="field"><label>Username</label><input type="text" id="authUsername" placeholder="e.g. yogeswar_k" autocapitalize="off" autocorrect="off" spellcheck="false"></div>
             <div class="field"><label>Password</label><input type="text" id="authPassword" placeholder="At least 6 characters" style="-webkit-text-security:disc;"></div>
             ${STATE.authError ? `<div class="note-box" style="border-color:var(--absent);color:var(--absent);">${esc(STATE.authError)}</div>` : ''}
 
@@ -318,6 +325,107 @@ export default function App() {
             </div>
             <div class="status-row">${btns}</div>
           </div>`;
+      }
+
+      /* ================= CALENDAR ================= */
+      const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+      function daysInMonth(year, month) { return new Date(year, month + 1, 0).getDate(); }
+
+      function calDoBadge(dateStr) {
+        if (!STATE.profile.branch || !STATE.config) return '';
+        const info = computeDayOrder(dateStr);
+        return info.type === 'dayorder' ? `<div class="cal-do-badge">DO${info.value}</div>` : '';
+      }
+
+      function renderMiniMonth(year, month) {
+        const startPad = new Date(year, month, 1).getDay();
+        const total = daysInMonth(year, month);
+        const todayS = todayStr();
+        let cells = '';
+        for (let i = 0; i < startPad; i++) cells += `<div class="cal-cell empty"></div>`;
+        for (let d = 1; d <= total; d++) {
+          const dateObj = new Date(year, month, d);
+          const dateStr = fmt(dateObj);
+          const kind = dayKind(dateStr, dateObj);
+          const isToday = dateStr === todayS;
+          const hName = holidayName(dateStr);
+          cells += `<div class="cal-cell ${kind ? 'cal-' + kind : ''} ${isToday ? 'cal-today' : ''}" data-action="cal-jump" data-date="${dateStr}"${hName ? ` title="${esc(hName)}"` : ''}>${d}</div>`;
+        }
+        const trail = (7 - ((startPad + total) % 7)) % 7;
+        for (let i = 0; i < trail; i++) cells += `<div class="cal-cell empty"></div>`;
+        return `
+          <div class="cal-mini" data-action="cal-open-month" data-month="${month}" data-year="${year}">
+            <div class="cal-mini-title">${MONTH_NAMES[month]}</div>
+            <div class="cal-grid cal-grid-mini">
+              <div class="cal-dow">S</div><div class="cal-dow">M</div><div class="cal-dow">T</div><div class="cal-dow">W</div><div class="cal-dow">T</div><div class="cal-dow">F</div><div class="cal-dow">S</div>
+              ${cells}
+            </div>
+          </div>`;
+      }
+
+      function renderCalendarLegend() {
+        return `
+          <div class="cal-legend">
+            <span class="cal-legend-item"><i class="cal-dot cal-dot-holiday"></i>Public holiday</span>
+            <span class="cal-legend-item"><i class="cal-dot cal-dot-weekend"></i>Sat / Sun</span>
+            <span class="cal-legend-item"><i class="cal-dot cal-dot-today"></i>Today</span>
+          </div>`;
+      }
+
+      function renderCalendarYear() {
+        const year = STATE.calYear;
+        const months = [];
+        for (let m = 0; m < 12; m++) months.push(renderMiniMonth(year, m));
+        return `
+          <div class="datenav">
+            <button class="datenav-btn" data-action="cal-prev-year">‹</button>
+            <div class="datenav-mid"><div class="datenav-day">${year}</div><div class="datenav-date">Year calendar · India holidays</div></div>
+            <button class="datenav-btn" data-action="cal-next-year">›</button>
+          </div>
+          ${renderCalendarLegend()}
+          <div class="cal-year-grid">${months.join('')}</div>
+        `;
+      }
+
+      function renderCalendarMonth() {
+        const year = STATE.calYear, month = STATE.calMonth;
+        const startPad = new Date(year, month, 1).getDay();
+        const total = daysInMonth(year, month);
+        const todayS = todayStr();
+        let cells = '';
+        for (let i = 0; i < startPad; i++) cells += `<div class="cal-cell-lg empty"></div>`;
+        for (let d = 1; d <= total; d++) {
+          const dateObj = new Date(year, month, d);
+          const dateStr = fmt(dateObj);
+          const kind = dayKind(dateStr, dateObj);
+          const isToday = dateStr === todayS;
+          const hName = holidayName(dateStr);
+          cells += `
+            <div class="cal-cell-lg ${kind ? 'cal-' + kind : ''} ${isToday ? 'cal-today' : ''}" data-action="cal-jump" data-date="${dateStr}">
+              <div class="cal-daynum">${d}</div>
+              ${hName ? `<div class="cal-hname">${esc(hName)}</div>` : ''}
+              ${calDoBadge(dateStr)}
+            </div>`;
+        }
+        const trail = (7 - ((startPad + total) % 7)) % 7;
+        for (let i = 0; i < trail; i++) cells += `<div class="cal-cell-lg empty"></div>`;
+        return `
+          <div class="datenav">
+            <button class="datenav-btn" data-action="cal-prev-month">‹</button>
+            <div class="datenav-mid"><div class="datenav-day">${MONTH_NAMES[month]}</div><div class="datenav-date">${year}</div></div>
+            <button class="datenav-btn" data-action="cal-next-month">›</button>
+          </div>
+          <button class="btn secondary full" style="margin-bottom:14px;" data-action="cal-back-year">« Back to year view</button>
+          ${renderCalendarLegend()}
+          <div class="cal-grid cal-grid-lg">
+            <div class="cal-dow">Sun</div><div class="cal-dow">Mon</div><div class="cal-dow">Tue</div><div class="cal-dow">Wed</div><div class="cal-dow">Thu</div><div class="cal-dow">Fri</div><div class="cal-dow">Sat</div>
+            ${cells}
+          </div>
+        `;
+      }
+
+      function renderCalendar() {
+        return STATE.calMode === 'month' ? renderCalendarMonth() : renderCalendarYear();
       }
 
       function renderSubjects() {
@@ -517,11 +625,11 @@ export default function App() {
 
       function renderProfile() {
         const options = STATE.branches.map(b => `<option value="${b.slug}" ${STATE.profile.branch === b.slug ? 'selected' : ''}>${esc(b.name)}</option>`).join('');
-        const email = STATE.session && STATE.session.user ? STATE.session.user.email : '';
+        const username = sessionUsername(STATE.session);
         return `
           <div class="section-label">Account</div>
           <div class="card">
-            <div class="field"><label>Signed in as</label><input type="text" value="${esc(email)}" disabled></div>
+            <div class="field"><label>Signed in as</label><input type="text" value="${esc(username)}" disabled></div>
             <button class="btn danger full" data-action="logout">Log out</button>
           </div>
 
@@ -572,14 +680,16 @@ export default function App() {
         /* --- auth actions --- */
         if (action === 'toggle-auth-mode') { STATE.authMode = STATE.authMode === 'login' ? 'signup' : 'login'; STATE.authError = ''; render(); return; }
         if (action === 'do-login' || action === 'do-signup') {
-          const email = (document.getElementById('authEmail') || {}).value?.trim();
+          const username = (document.getElementById('authUsername') || {}).value?.trim();
           const password = (document.getElementById('authPassword') || {}).value || '';
-          if (!email || !password) { STATE.authError = 'Enter your email and password.'; render(); return; }
+          if (!username || !password) { STATE.authError = 'Enter your username and password.'; render(); return; }
+          if (!isValidUsername(username)) { STATE.authError = 'Username should be 3–20 letters, numbers, underscores or dots.'; render(); return; }
+          if (action === 'do-signup' && password.length < 6) { STATE.authError = 'Password should be at least 6 characters.'; render(); return; }
           STATE.authBusy = true; STATE.authError = ''; render();
-          const { error } = action === 'do-login' ? await signIn(email, password) : await signUp(email, password);
+          const { error } = action === 'do-login' ? await signIn(username, password) : await signUp(username, password);
           STATE.authBusy = false;
           if (error) { STATE.authError = error.message; render(); return; }
-          if (action === 'do-signup') { STATE.authError = 'Account created — check your email if confirmation is required, then log in.'; STATE.authMode = 'login'; render(); return; }
+          if (action === 'do-signup') { STATE.authError = 'Account created — log in with your new username.'; STATE.authMode = 'login'; render(); return; }
           return; // successful login triggers onAuthStateChange -> boot()
         }
         if (action === 'logout') {
@@ -593,6 +703,14 @@ export default function App() {
         else if (action === 'date-prev') { STATE.viewDate = addDays(STATE.viewDate, -1); render(); }
         else if (action === 'date-next') { STATE.viewDate = addDays(STATE.viewDate, 1); render(); }
         else if (action === 'date-today') { STATE.viewDate = todayStr(); render(); }
+
+        else if (action === 'cal-prev-year') { STATE.calYear--; render(); }
+        else if (action === 'cal-next-year') { STATE.calYear++; render(); }
+        else if (action === 'cal-prev-month') { if (STATE.calMonth === 0) { STATE.calMonth = 11; STATE.calYear--; } else { STATE.calMonth--; } render(); }
+        else if (action === 'cal-next-month') { if (STATE.calMonth === 11) { STATE.calMonth = 0; STATE.calYear++; } else { STATE.calMonth++; } render(); }
+        else if (action === 'cal-open-month') { STATE.calMonth = Number(el.dataset.month); STATE.calYear = Number(el.dataset.year); STATE.calMode = 'month'; render(); }
+        else if (action === 'cal-back-year') { STATE.calMode = 'year'; render(); }
+        else if (action === 'cal-jump') { STATE.viewDate = el.dataset.date; STATE.tab = 'today'; render(); }
 
         else if (action === 'mark') {
           await markAttendance(el.dataset.date, { id: el.dataset.classid, subject: el.dataset.subject, start: el.dataset.start, end: el.dataset.end }, el.dataset.status);
