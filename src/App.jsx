@@ -353,7 +353,9 @@ export default function App() {
           const hName = holidayName(dateStr);
           cells += `<div class="cal-cell ${kind ? 'cal-' + kind : ''} ${isToday ? 'cal-today' : ''}" data-action="cal-jump" data-date="${dateStr}"${hName ? ` title="${esc(hName)}"` : ''}>${d}</div>`;
         }
-        const trail = (7 - ((startPad + total) % 7)) % 7;
+        // Always pad out to a fixed 6-row (42-cell) grid so every month card
+        // renders at the same height, regardless of how many weeks it spans.
+        const trail = 42 - (startPad + total);
         for (let i = 0; i < trail; i++) cells += `<div class="cal-cell empty"></div>`;
         return `
           <div class="cal-mini" data-action="cal-open-month" data-month="${month}" data-year="${year}">
