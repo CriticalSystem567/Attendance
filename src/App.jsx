@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { storageGet, storageSet } from "./storage.js";
 import { signUp, signIn, signOut, getSession, onAuthStateChange, isValidUsername, sessionUsername } from "./auth.js";
 import { dayKind, holidayName } from "./holidays.js";
+import { APP_VERSION } from "./version.js";
 import logoUrl from "./assets/logo.png";
 import "./App.css";
 
@@ -200,7 +201,7 @@ export default function App() {
               <div class="brand">
                 <div class="brand-mark"><img src="${logoUrl}" alt="" /></div>
                 <div>
-                  <div class="brand-name">My Attendance Tracker</div>
+                  <div class="brand-name">My Attendance Tracker <span class="brand-version">v${APP_VERSION}</span></div>
                   <div class="brand-sub">${esc(branchName(STATE.profile.branch))}</div>
                 </div>
               </div>
@@ -237,6 +238,7 @@ export default function App() {
             <button class="btn secondary full" style="margin-top:10px;" data-action="toggle-auth-mode">
               ${isLogin ? "New here? Create an account" : 'Already have an account? Log in'}
             </button>
+            <div class="version-tag">v${APP_VERSION}</div>
           </div>
         `;
       }
@@ -672,6 +674,8 @@ export default function App() {
             <p class="hint">Your attendance marks are private to your account. This clears just your marks, not the class timetable.</p>
             <button class="btn danger full" data-action="clear-attendance">Clear my attendance history</button>
           </div>
+
+          <div class="version-tag" style="text-align:center;margin-top:18px;">My Attendance Tracker · v${APP_VERSION}</div>
         `;
       }
 
