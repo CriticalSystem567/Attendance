@@ -270,6 +270,7 @@ textarea:focus{outline:none;border-color:var(--accent);}
   gap:14px;
   width:100%;
   min-width:0;
+  align-items:start;
 }
 .cal-mini{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px 12px 12px;backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);box-shadow:var(--shadow-card);cursor:pointer;min-width:0;}
 .cal-mini-title{font-family:'Space Grotesk';font-weight:700;font-size:14px;margin-bottom:10px;text-align:center;color:var(--text);}
