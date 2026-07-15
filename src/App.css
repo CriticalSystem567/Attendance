@@ -276,7 +276,7 @@ textarea:focus{outline:none;border-color:var(--accent);}
 .cal-mini-title{font-family:'Space Grotesk';font-weight:700;font-size:14px;margin-bottom:10px;text-align:center;color:var(--text);}
 .cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:3px;min-width:0;}
 .cal-dow{font-size:9.5px;font-weight:700;color:var(--text-dim2);text-align:center;padding-bottom:4px;letter-spacing:0.3px;}
-.cal-cell{aspect-ratio:1;display:flex;align-items:center;justify-content:center;font-size:11.5px;font-weight:600;color:var(--text-dim);border-radius:7px;cursor:pointer;position:relative;}
+.cal-cell{height:clamp(26px, 5.8vw, 42px);display:flex;align-items:center;justify-content:center;font-size:11.5px;font-weight:600;color:var(--text-dim);border-radius:7px;cursor:pointer;position:relative;}
 .cal-cell.empty{cursor:default;}
 .cal-cell.cal-weekend{color:var(--weekend);background:var(--weekend-dim);}
 .cal-cell.cal-holiday{color:var(--holiday);background:var(--holiday-dim);font-weight:700;}
@@ -289,7 +289,7 @@ textarea:focus{outline:none;border-color:var(--accent);}
 
 .cal-grid-lg{grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;min-width:0;}
 .cal-grid-lg .cal-dow{font-size:9px;padding-bottom:4px;}
-.cal-cell-lg{aspect-ratio:0.62;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:8px;padding:3px 3px;display:flex;flex-direction:column;cursor:pointer;overflow:hidden;min-width:0;}
+.cal-cell-lg{height:clamp(52px, 15vw, 66px);background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:8px;padding:3px 3px;display:flex;flex-direction:column;cursor:pointer;overflow:hidden;min-width:0;}
 .cal-cell-lg.empty{background:transparent;border-color:transparent;cursor:default;}
 .cal-daynum{font-family:'Space Grotesk';font-weight:700;font-size:11px;color:var(--text);}
 .cal-cell-lg.cal-weekend{background:var(--weekend-dim);border-color:rgba(245,185,66,0.28);}
@@ -302,7 +302,7 @@ textarea:focus{outline:none;border-color:var(--accent);}
 .cal-do-badge{margin-top:auto;font-size:6.5px;font-weight:700;color:var(--accent);background:var(--accent-dim);border-radius:4px;padding:1px 3px;align-self:flex-start;}
 
 @media (min-width:640px){
-  .cal-cell-lg{aspect-ratio:0.85;border-radius:10px;padding:6px 5px;}
+  .cal-cell-lg{height:76px;border-radius:10px;padding:6px 5px;}
   .cal-grid-lg{gap:6px;}
   .cal-grid-lg .cal-dow{font-size:10.5px;padding-bottom:6px;}
   .cal-daynum{font-size:13px;}
