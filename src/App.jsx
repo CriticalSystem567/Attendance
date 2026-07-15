@@ -376,9 +376,8 @@ export default function App() {
 
       function renderCalendarYear() {
         const year = STATE.calYear;
-        const firstHalf = [], secondHalf = [];
-        for (let m = 0; m < 6; m++) firstHalf.push(renderMiniMonth(year, m));
-        for (let m = 6; m < 12; m++) secondHalf.push(renderMiniMonth(year, m));
+        const months = [];
+        for (let m = 0; m < 12; m++) months.push(renderMiniMonth(year, m));
         return `
           <div class="datenav">
             <button class="datenav-btn" data-action="cal-prev-year">‹</button>
@@ -386,9 +385,8 @@ export default function App() {
             <button class="datenav-btn" data-action="cal-next-year">›</button>
           </div>
           ${renderCalendarLegend()}
-          <div class="cal-year-spread">
-            <div class="cal-year-col">${firstHalf.join('')}</div>
-            <div class="cal-year-col">${secondHalf.join('')}</div>
+          <div class="cal-year-grid">
+            ${months.join('')}
           </div>
         `;
       }
