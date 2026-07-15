@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { storageGet, storageSet } from "./storage.js";
+import { signUp, signIn, signOut, getSession, onAuthStateChange } from "./auth.js";
 import "./App.css";
 
 export default function App() {
@@ -41,6 +42,10 @@ export default function App() {
       };
 
       let STATE = {
+        session: null,
+        authMode: 'login',
+        authError: '',
+        authBusy: false,
         branches: [],
         profile: null,
         config: null,
@@ -51,9 +56,8 @@ export default function App() {
         tab: 'today',
         viewDate: todayStr(),
         setupDoTab: '1',
-        onboarding: null,
-        formBranchChoice: null,
-        formBatchChoice: 'batch1'
+        creatingBranch: false,
+        newBranchDraft: ''
       };
 
       const bk = slug => `branch__${slug}__`;
@@ -62,6 +66,10 @@ export default function App() {
       async function saveBranches() { await storageSet('branches', STATE.branches, true); }
 
       async function loadBranchData(slug) {
+        if (!slug) {
+          STATE.config = null; STATE.common = emptyDOMap(); STATE.batch1 = emptyDOMap(); STATE.batch2 = emptyDOMap(); STATE.assignments = [];
+          return;
+        }
         const [config, common, batch1, batch2, assignments] = await Promise.all([
           storageGet(bk(slug) + 'config', true),
           storageGet(bk(slug) + 'common', true),
@@ -79,8 +87,9 @@ export default function App() {
       async function saveCollection(key) { await storageSet(bk(STATE.profile.branch) + key, STATE[key], true); }
       async function saveAssignments() { await storageSet(bk(STATE.profile.branch) + 'assignments', STATE.assignments, true); }
       async function saveAssignmentStatus() { await storageSet('assignmentStatus', STATE.assignmentStatus, false); }
+      async function saveProfile() { await storageSet('profile', STATE.profile, false); }
 
-      function branchName(slug) { const b = STATE.branches.find(x => x.slug === slug); return b ? b.name : slug; }
+      function branchName(slug) { if (!slug) return 'No class set'; const b = STATE.branches.find(x => x.slug === slug); return b ? b.name : slug; }
 
       function computeDayOrder(dateStr) {
         const cfg = STATE.config;
@@ -103,6 +112,7 @@ export default function App() {
       }
 
       function getClassesForDO(doValue) {
+        if (!STATE.profile.branch) return [];
         const batchKey = STATE.profile.batch;
         const list = [
           ...((STATE.common[String(doValue)]) || []),
@@ -144,6 +154,7 @@ export default function App() {
         return { counts, P, A, O, T, pct, advice, adviceType, entries };
       }
       function allSubjects() {
+        if (!STATE.profile.branch) return [];
         const set = new Set();
         for (let d = 1; d <= 5; d++) getClassesForDO(d).forEach(c => set.add(c.subject));
         return [...set].sort();
@@ -152,36 +163,21 @@ export default function App() {
       let toastTimer;
       function toast(msg) {
         const el = document.getElementById('toast');
+        if (!el) return;
         el.textContent = msg; el.classList.add('show');
         clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 1800);
       }
 
+      /* ================= RENDER ================= */
       function render() {
-        const app = document.getElementById('app');
-        const navbar = document.getElementById('navbar');
-        const topbarWrap = document.getElementById('topbarWrap');
+        const root = document.getElementById('root-shell');
 
-        if (STATE.onboarding) {
-          app.classList.remove('with-nav');
-          navbar.style.display = 'none';
-          topbarWrap.innerHTML = '';
-          document.getElementById('main').innerHTML = renderOnboarding();
+        if (!STATE.session) {
+          root.innerHTML = renderAuthShell();
           return;
         }
 
-        app.classList.add('with-nav');
-        navbar.style.display = 'flex';
-        topbarWrap.innerHTML = `
-          <div class="topbar">
-            <div class="brand">
-              <div class="brand-mark">DO</div>
-              <div>
-                <div class="brand-name">DayOrder</div>
-                <div class="brand-sub">${esc(branchName(STATE.profile.branch))}</div>
-              </div>
-            </div>
-          </div>`;
-
+        root.innerHTML = renderAppShell();
         document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === STATE.tab));
         const main = document.getElementById('main');
         if (STATE.tab === 'today') main.innerHTML = renderToday();
@@ -191,54 +187,73 @@ export default function App() {
         else main.innerHTML = renderProfile();
       }
 
-      function renderOnboarding() {
-        if (STATE.onboarding === 'create') {
-          return `
-            <div class="onboard-wrap">
-              <div class="onboard-logo">DO</div>
-              <h1 class="onboard-title">Set up your class</h1>
-              <p class="onboard-sub">Give your class a name. Everyone who picks this class from the list will share the same Day Order calendar and timetable — you'll build that next.</p>
-              <div class="field">
-                <label>Class name</label>
-                <input type="text" id="newBranchName" placeholder="e.g. M.Tech VLSI 2026 · Sem 3">
+      function renderAppShell() {
+        return `
+          <div class="app with-nav" id="app">
+            <div class="topbar">
+              <div class="brand">
+                <div class="brand-mark">AT</div>
+                <div>
+                  <div class="brand-name">My Attendance Tracker</div>
+                  <div class="brand-sub">${esc(branchName(STATE.profile.branch))}</div>
+                </div>
               </div>
-              <button class="btn full" data-action="create-branch">Continue</button>
-              ${STATE.branches.length ? `<button class="btn secondary full" style="margin-top:10px;" data-action="onboard-back">Back to class list</button>` : ''}
-              <div class="note-box">This class's calendar and timetable will be visible and editable by anyone who selects it from the list — that's how your batchmates see the same schedule you set up.</div>
-            </div>`;
-        }
-        const options = STATE.branches.map(b => `
-          <div class="branch-option ${STATE.formBranchChoice === b.slug ? 'selected' : ''}" data-action="choose-branch" data-slug="${b.slug}">
-            <div class="n">${esc(b.name)}</div>
-            <div style="font-size:11px;color:var(--text-dim);">${STATE.formBranchChoice === b.slug ? 'Selected' : 'Tap to select'}</div>
-          </div>`).join('');
+            </div>
+            <main id="main"></main>
+            <div class="navbar" id="navbar">
+              <button class="nav-btn" data-action="nav-tab" data-tab="today"><span class="ic">◐</span><span class="lb">Today</span></button>
+              <button class="nav-btn" data-action="nav-tab" data-tab="subjects"><span class="ic">▤</span><span class="lb">Subjects</span></button>
+              <button class="nav-btn" data-action="nav-tab" data-tab="setup"><span class="ic">⚙</span><span class="lb">Timetable</span></button>
+              <button class="nav-btn" data-action="nav-tab" data-tab="assignments"><span class="ic">✎</span><span class="lb">Tasks</span></button>
+              <button class="nav-btn" data-action="nav-tab" data-tab="profile"><span class="ic">◍</span><span class="lb">Profile</span></button>
+            </div>
+          </div>
+          <div class="toast" id="toast"></div>
+        `;
+      }
+
+      function renderAuthShell() {
+        const isLogin = STATE.authMode === 'login';
         return `
           <div class="onboard-wrap">
-            <div class="onboard-logo">DO</div>
-            <h1 class="onboard-title">Welcome to DayOrder</h1>
-            <p class="onboard-sub">Pick your class and batch to load the right timetable. Your attendance stays private to you, on this device.</p>
+            <div class="onboard-logo">AT</div>
+            <h1 class="onboard-title">My Attendance Tracker</h1>
+            <p class="onboard-sub">${isLogin ? 'Log in to see your classes, attendance and assignments.' : 'Create an account to get started — your data follows you across devices.'}</p>
 
-            <div class="field"><label>Your name</label><input type="text" id="profName" placeholder="e.g. Arjun"></div>
+            <div class="field"><label>Email</label><input type="text" id="authEmail" placeholder="you@example.com"></div>
+            <div class="field"><label>Password</label><input type="text" id="authPassword" placeholder="At least 6 characters" style="-webkit-text-security:disc;"></div>
+            ${STATE.authError ? `<div class="note-box" style="border-color:var(--absent);color:var(--absent);">${esc(STATE.authError)}</div>` : ''}
 
-            <div class="section-label" style="margin-top:2px;">Your class</div>
-            ${options}
-            <div class="branch-option" data-action="start-create-branch">
-              <div class="n">+ Create a new class</div>
-            </div>
-
-            <div class="field" style="margin-top:16px;">
-              <label>Your batch</label>
-              <div class="chk-row">
-                <div class="chk-pill ${STATE.formBatchChoice === 'batch1' ? 'active' : ''}" data-action="choose-batch" data-batch="batch1">Batch 1</div>
-                <div class="chk-pill ${STATE.formBatchChoice === 'batch2' ? 'active' : ''}" data-action="choose-batch" data-batch="batch2">Batch 2</div>
-              </div>
-            </div>
-
-            <button class="btn full" style="margin-top:20px;" data-action="finish-onboarding">Continue</button>
-          </div>`;
+            <button class="btn full" style="margin-top:14px;" data-action="${isLogin ? 'do-login' : 'do-signup'}" ${STATE.authBusy ? 'disabled' : ''}>
+              ${STATE.authBusy ? 'Please wait…' : (isLogin ? 'Log in' : 'Sign up')}
+            </button>
+            <button class="btn secondary full" style="margin-top:10px;" data-action="toggle-auth-mode">
+              ${isLogin ? "New here? Create an account" : 'Already have an account? Log in'}
+            </button>
+          </div>
+        `;
       }
 
       function renderToday() {
+        if (!STATE.profile.branch) {
+          return `
+            <div class="who-strip"><b>${esc(STATE.profile.name || 'You')}</b></div>
+            <div class="datenav">
+              <button class="datenav-btn" data-action="date-prev">‹</button>
+              <div class="datenav-mid">
+                <div class="datenav-day">${shortDow(STATE.viewDate)}</div>
+                <div class="datenav-date">${humanDate(STATE.viewDate)}</div>
+              </div>
+              <button class="datenav-btn" data-action="date-next">›</button>
+            </div>
+            <div class="card empty">
+              <div class="ic">▤</div>
+              <h3>No class set up yet</h3>
+              <p>Pick or create a class in Profile to see your timetable on the calendar.</p>
+              <button class="btn" data-action="nav-tab" data-tab="profile">Go to Profile</button>
+            </div>`;
+        }
+
         const d = STATE.viewDate;
         const doInfo = computeDayOrder(d);
         const isToday = d === todayStr();
@@ -306,6 +321,9 @@ export default function App() {
       }
 
       function renderSubjects() {
+        if (!STATE.profile.branch) {
+          return `<div class="card empty"><div class="ic">▤</div><h3>No class set up yet</h3><p>Pick or create a class in Profile first.</p><button class="btn" data-action="nav-tab" data-tab="profile">Go to Profile</button></div>`;
+        }
         const subs = allSubjects();
         if (!subs.length) {
           return `<div class="card empty"><div class="ic">▤</div><h3>No subjects yet</h3><p>Add your class's timetable in the Timetable tab to start tracking attendance.</p><button class="btn" data-action="nav-tab" data-tab="setup">Go to Timetable</button></div>`;
@@ -349,6 +367,9 @@ export default function App() {
       }
 
       function renderSetup() {
+        if (!STATE.profile.branch) {
+          return `<div class="card empty"><div class="ic">⚙</div><h3>No class set up yet</h3><p>Pick or create a class in Profile first.</p><button class="btn" data-action="nav-tab" data-tab="profile">Go to Profile</button></div>`;
+        }
         const cfg = STATE.config;
         const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
         const skipPills = dayNames.map((n, i) => `<div class="chk-pill ${cfg.skipDays.includes(i) ? 'active' : ''}" data-action="toggle-skip" data-day="${i}">${n}</div>`).join('');
@@ -437,6 +458,9 @@ export default function App() {
         render();
       }
       function renderAssignments() {
+        if (!STATE.profile.branch) {
+          return `<div class="card empty"><div class="ic">✎</div><h3>No class set up yet</h3><p>Pick or create a class in Profile first.</p><button class="btn" data-action="nav-tab" data-tab="profile">Go to Profile</button></div>`;
+        }
         const subs = allSubjects();
         const list = [...STATE.assignments].sort((a, b) => a.dueDate.localeCompare(b.dueDate));
         const today = todayStr();
@@ -493,11 +517,35 @@ export default function App() {
 
       function renderProfile() {
         const options = STATE.branches.map(b => `<option value="${b.slug}" ${STATE.profile.branch === b.slug ? 'selected' : ''}>${esc(b.name)}</option>`).join('');
+        const email = STATE.session && STATE.session.user ? STATE.session.user.email : '';
         return `
+          <div class="section-label">Account</div>
+          <div class="card">
+            <div class="field"><label>Signed in as</label><input type="text" value="${esc(email)}" disabled></div>
+            <button class="btn danger full" data-action="logout">Log out</button>
+          </div>
+
           <div class="section-label">Your profile</div>
           <div class="card">
             <div class="field"><label>Name</label><input type="text" id="pfName" value="${esc(STATE.profile.name || '')}" placeholder="Your name"></div>
-            <div class="field"><label>Class</label><select id="pfBranch">${options}</select></div>
+
+            <div class="field"><label>Class</label>
+              ${STATE.branches.length ? `<select id="pfBranch">${options}</select>` : `<div class="hint" style="margin:0;">No classes exist yet — create one below.</div>`}
+            </div>
+
+            ${STATE.creatingBranch ? `
+              <div class="field">
+                <label>New class name</label>
+                <input type="text" id="newBranchName" placeholder="e.g. M.Tech VLSI 2026 · Sem 3" value="${esc(STATE.newBranchDraft)}">
+              </div>
+              <div class="row2">
+                <button class="btn secondary full" data-action="create-branch">Create class</button>
+                <button class="btn secondary full" data-action="cancel-create-branch">Cancel</button>
+              </div>
+            ` : `
+              <button class="btn secondary full" data-action="start-create-branch" style="margin-bottom:14px;">+ Create a new class</button>
+            `}
+
             <div class="field"><label>Batch</label>
               <select id="pfBatch">
                 <option value="batch1" ${STATE.profile.batch === 'batch1' ? 'selected' : ''}>Batch 1</option>
@@ -507,24 +555,39 @@ export default function App() {
             <button class="btn full" data-action="save-profile">Save profile</button>
           </div>
 
-          <div class="section-label">Add another class</div>
-          <div class="card">
-            <p class="hint" style="margin-bottom:12px;">Setting up a different course or helping a friend from another branch? Create a new shared class here.</p>
-            <button class="btn secondary full" data-action="start-create-branch-from-profile">+ Create a new class</button>
-          </div>
-
           <div class="section-label">Your data</div>
           <div class="card">
-            <p class="hint">Your attendance marks are private to this device. This clears just your marks, not the class timetable.</p>
+            <p class="hint">Your attendance marks are private to your account. This clears just your marks, not the class timetable.</p>
             <button class="btn danger full" data-action="clear-attendance">Clear my attendance history</button>
           </div>
         `;
       }
 
-      document.getElementById('app').addEventListener('click', async (e) => {
+      /* ================= EVENTS ================= */
+      document.addEventListener('click', async (e) => {
         const el = e.target.closest('[data-action]');
         if (!el) return;
         const action = el.dataset.action;
+
+        /* --- auth actions --- */
+        if (action === 'toggle-auth-mode') { STATE.authMode = STATE.authMode === 'login' ? 'signup' : 'login'; STATE.authError = ''; render(); return; }
+        if (action === 'do-login' || action === 'do-signup') {
+          const email = (document.getElementById('authEmail') || {}).value?.trim();
+          const password = (document.getElementById('authPassword') || {}).value || '';
+          if (!email || !password) { STATE.authError = 'Enter your email and password.'; render(); return; }
+          STATE.authBusy = true; STATE.authError = ''; render();
+          const { error } = action === 'do-login' ? await signIn(email, password) : await signUp(email, password);
+          STATE.authBusy = false;
+          if (error) { STATE.authError = error.message; render(); return; }
+          if (action === 'do-signup') { STATE.authError = 'Account created — check your email if confirmation is required, then log in.'; STATE.authMode = 'login'; render(); return; }
+          return; // successful login triggers onAuthStateChange -> boot()
+        }
+        if (action === 'logout') {
+          await signOut();
+          return; // onAuthStateChange handles the reset
+        }
+
+        if (!STATE.session) return;
 
         if (action === 'nav-tab') { STATE.tab = el.dataset.tab; render(); }
         else if (action === 'date-prev') { STATE.viewDate = addDays(STATE.viewDate, -1); render(); }
@@ -614,12 +677,13 @@ export default function App() {
 
         else if (action === 'save-profile') {
           const name = document.getElementById('pfName').value.trim();
-          const branch = document.getElementById('pfBranch').value;
+          const branchSelect = document.getElementById('pfBranch');
+          const branch = branchSelect ? branchSelect.value : STATE.profile.branch;
           const batch = document.getElementById('pfBatch').value;
           const branchChanged = branch !== STATE.profile.branch;
-          STATE.profile = { name, branch, batch };
-          await storageSet('profile', STATE.profile, false);
-          if (branchChanged) await loadBranchData(branch);
+          STATE.profile = { name, branch: branch || null, batch };
+          await saveProfile();
+          if (branchChanged) await loadBranchData(STATE.profile.branch);
           toast('Profile saved');
           STATE.tab = 'today';
           render();
@@ -632,15 +696,8 @@ export default function App() {
             render();
           }
         }
-        else if (action === 'start-create-branch-from-profile') {
-          STATE.onboarding = 'create';
-          render();
-        }
-
-        else if (action === 'choose-branch') { STATE.formBranchChoice = el.dataset.slug; render(); }
-        else if (action === 'choose-batch') { STATE.formBatchChoice = el.dataset.batch; render(); }
-        else if (action === 'start-create-branch') { STATE.onboarding = 'create'; render(); }
-        else if (action === 'onboard-back') { STATE.onboarding = 'select'; render(); }
+        else if (action === 'start-create-branch') { STATE.creatingBranch = true; STATE.newBranchDraft = ''; render(); }
+        else if (action === 'cancel-create-branch') { STATE.creatingBranch = false; render(); }
         else if (action === 'create-branch') {
           const name = document.getElementById('newBranchName').value.trim();
           if (!name) { toast('Give your class a name'); return; }
@@ -649,64 +706,61 @@ export default function App() {
             STATE.branches.push({ slug, name });
             await saveBranches();
           }
-          STATE.formBranchChoice = slug;
-          STATE.onboarding = 'select';
-          toast('Class created — pick it below to continue');
-          render();
-        }
-        else if (action === 'finish-onboarding') {
-          const name = document.getElementById('profName').value.trim();
-          if (!STATE.formBranchChoice) { toast('Pick or create a class'); return; }
-          if (!name) { toast('Enter your name'); return; }
-          STATE.profile = { name, branch: STATE.formBranchChoice, batch: STATE.formBatchChoice };
-          await storageSet('profile', STATE.profile, false);
-          await loadBranchData(STATE.profile.branch);
-          STATE.onboarding = null;
-          STATE.tab = 'today';
+          STATE.profile.branch = slug;
+          STATE.creatingBranch = false;
+          await loadBranchData(slug);
+          await saveProfile();
+          toast('Class created');
           render();
         }
       });
 
-      document.getElementById('app').addEventListener('change', (e) => {
+      document.addEventListener('change', (e) => {
         if (e.target.id === 'ovType') {
           document.getElementById('ovValueWrap').style.display = e.target.value === 'dayorder' ? 'block' : 'none';
         }
       });
 
-      (async function init() {
-        document.getElementById('main').innerHTML = `<div class="card empty" style="margin:60px 20px;"><div class="ic">◐</div><p>Loading…</p></div>`;
-        document.getElementById('navbar').style.display = 'none';
-
-        STATE.profile = await storageGet('profile', false);
+      /* ---------- boot ---------- */
+      async function loadEverythingForSession() {
+        STATE.profile = (await storageGet('profile', false)) || { name: '', branch: null, batch: 'batch1' };
         STATE.attendance = (await storageGet('attendance', false)) || {};
         STATE.assignmentStatus = (await storageGet('assignmentStatus', false)) || {};
         await loadBranches();
+        await loadBranchData(STATE.profile.branch);
+        STATE.tab = 'today';
+      }
 
-        if (STATE.profile && STATE.branches.find(b => b.slug === STATE.profile.branch)) {
-          await loadBranchData(STATE.profile.branch);
-          STATE.onboarding = null;
-        } else {
-          STATE.onboarding = STATE.branches.length === 0 ? 'create' : 'select';
-          if (STATE.branches.length === 1 && !STATE.formBranchChoice) STATE.formBranchChoice = STATE.branches[0].slug;
-        }
+      function resetLocalState() {
+        STATE.profile = null; STATE.branches = []; STATE.config = null;
+        STATE.common = null; STATE.batch1 = null; STATE.batch2 = null;
+        STATE.assignments = []; STATE.assignmentStatus = {}; STATE.attendance = {};
+        STATE.tab = 'today'; STATE.viewDate = todayStr(); STATE.creatingBranch = false;
+      }
+
+      (async function init() {
+        const session = await getSession();
+        STATE.session = session;
+        if (session) await loadEverythingForSession();
         render();
+
+        onAuthStateChange(async (session) => {
+          const hadSession = !!STATE.session;
+          STATE.session = session;
+          if (session && !hadSession) {
+            await loadEverythingForSession();
+            render();
+          } else if (!session && hadSession) {
+            resetLocalState();
+            STATE.authMode = 'login';
+            STATE.authError = '';
+            render();
+          }
+        });
       })();
 
     })();
   }, []);
 
-  return (
-    <div className="app" id="app">
-      <div id="topbarWrap"></div>
-      <main id="main"></main>
-      <div className="navbar" id="navbar">
-        <button className="nav-btn" data-action="nav-tab" data-tab="today"><span className="ic">◐</span><span className="lb">Today</span></button>
-        <button className="nav-btn" data-action="nav-tab" data-tab="subjects"><span className="ic">▤</span><span className="lb">Subjects</span></button>
-        <button className="nav-btn" data-action="nav-tab" data-tab="setup"><span className="ic">⚙</span><span className="lb">Timetable</span></button>
-        <button className="nav-btn" data-action="nav-tab" data-tab="assignments"><span className="ic">✎</span><span className="lb">Tasks</span></button>
-        <button className="nav-btn" data-action="nav-tab" data-tab="profile"><span className="ic">◍</span><span className="lb">Profile</span></button>
-      </div>
-      <div className="toast" id="toast"></div>
-    </div>
-  );
+  return <div id="root-shell"></div>;
 }

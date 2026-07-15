@@ -1,18 +1,29 @@
 import { supabase } from "./supabaseClient.js";
 
-// Shared data (branch timetables, config, assignments) lives in Supabase
-// so every classmate who opens the site sees the same thing.
+// Shared data (class timetables, config, assignments) lives in the
+// `shared_data` table — every classmate who opens the site sees the same thing.
 //
 // Personal data (your profile, your attendance marks, your assignment
-// status) lives in this browser's localStorage instead — there's no
-// login system, so "personal" here means "on this device".
+// status) lives in the `user_data` table, scoped to your logged-in
+// account via Row Level Security — so it follows you across devices,
+// but nobody else can read or write it.
 
 export async function storageGet(key, shared) {
   if (!shared) {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return null;
     try {
-      const raw = localStorage.getItem("do_" + key);
-      return raw ? JSON.parse(raw) : null;
+      const { data, error } = await supabase
+        .from("user_data")
+        .select("value")
+        .eq("user_id", user.id)
+        .eq("key", key)
+        .maybeSingle();
+      if (error) throw error;
+      return data ? data.value : null;
     } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("storageGet (personal) failed for", key, e);
       return null;
     }
   }
@@ -33,12 +44,19 @@ export async function storageGet(key, shared) {
 
 export async function storageSet(key, val, shared) {
   if (!shared) {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return false;
     try {
-      localStorage.setItem("do_" + key, JSON.stringify(val));
+      const { error } = await supabase
+        .from("user_data")
+        .upsert({ user_id: user.id, key, value: val }, { onConflict: "user_id,key" });
+      if (error) throw error;
+      return true;
     } catch (e) {
-      // ignore — quota errors etc.
+      // eslint-disable-next-line no-console
+      console.warn("storageSet (personal) failed for", key, e);
+      return false;
     }
-    return true;
   }
   try {
     const { error } = await supabase

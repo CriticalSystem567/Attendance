@@ -42,3 +42,31 @@ create policy "public write" on shared_data
 
 create policy "public update" on shared_data
   for update using (true);
+
+-- Personal data, scoped per logged-in user (profile, attendance marks,
+-- assignment submission status). Requires Supabase Auth (email/password,
+-- enabled by default on new projects).
+
+create table if not exists user_data (
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  key        text not null,
+  value      jsonb not null,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, key)
+);
+
+drop trigger if exists user_data_touch on user_data;
+create trigger user_data_touch
+before update on user_data
+for each row execute function set_updated_at();
+
+alter table user_data enable row level security;
+
+create policy "own read" on user_data
+  for select using (auth.uid() = user_id);
+
+create policy "own insert" on user_data
+  for insert with check (auth.uid() = user_id);
+
+create policy "own update" on user_data
+  for update using (auth.uid() = user_id);
