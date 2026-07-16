@@ -889,6 +889,11 @@ export default function App() {
             STATE.branches.push({ slug: preset.slug, name: preset.name });
             await saveBranches();
           }
+          // Must set profile.branch BEFORE loading/saving, since loadBranchData,
+          // saveConfig and saveCollection all key their storage off
+          // STATE.profile.branch — setting it after the saves (as before) wrote
+          // the seeded timetable under the wrong branch key entirely.
+          STATE.profile.branch = preset.slug;
           await loadBranchData(preset.slug);
           // Only seed the timetable if this shared class hasn't already been
           // seeded before (so re-picking it later doesn't wipe anyone's edits).
@@ -910,7 +915,6 @@ export default function App() {
             await saveCollection('batch1');
             await saveCollection('batch2');
           }
-          STATE.profile.branch = preset.slug;
           STATE.creatingBranch = false;
           await saveProfile();
           toast(`${preset.name} set up`);
