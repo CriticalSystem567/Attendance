@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { storageGet, storageSet } from "./storage.js";
 import { signUp, signIn, signOut, getSession, onAuthStateChange, isValidUsername, sessionUsername } from "./auth.js";
 import { dayKind, holidayName } from "./holidays.js";
+import { PRESETS, buildPresetTimetable, buildPresetOverrides } from "./presets.js";
 import { APP_VERSION } from "./version.js";
 import logoUrl from "./assets/logo.png";
 import "./App.css";
@@ -83,7 +84,8 @@ export default function App() {
           storageGet(bk(slug) + 'batch2', true),
           storageGet(bk(slug) + 'assignments', true)
         ]);
-        STATE.config = config || { startDate: todayStr(), startDayOrder: 1, skipDays: [0, 6], overrides: {} };
+        STATE.config = config || { startDate: todayStr(), startDayOrder: 1, skipDays: [0, 6], overrides: {}, academicEvents: [] };
+        if (!STATE.config.academicEvents) STATE.config.academicEvents = [];
         STATE.common = common || emptyDOMap();
         STATE.batch1 = batch1 || emptyDOMap();
         STATE.batch2 = batch2 || emptyDOMap();
@@ -111,9 +113,13 @@ export default function App() {
           const cds = fmt(cur);
           const ov = cfg.overrides[cds];
           if (ov) { if (ov.type === 'dayorder') currentDO = ov.value; }
-          else if (!cfg.skipDays.includes(cur.getDay())) { currentDO = (currentDO % 5) + 1; }
+          else if (!cfg.skipDays.includes(cur.getDay()) && !holidayName(cds)) { currentDO = (currentDO % 5) + 1; }
         }
-        if (cfg.skipDays.includes(target.getDay()) && !cfg.overrides[dateStr]) return { type: 'holiday', value: null, auto: true };
+        if (!cfg.overrides[dateStr]) {
+          if (cfg.skipDays.includes(target.getDay())) return { type: 'holiday', value: null, auto: true };
+          const hName = holidayName(dateStr);
+          if (hName) return { type: 'holiday', value: null, auto: true, reason: hName };
+        }
         return { type: 'dayorder', value: currentDO };
       }
 
@@ -282,7 +288,7 @@ export default function App() {
           classesHtml = classes.length ? classes.map(c => renderClassCard(d, c)).join('') : `<div class="card empty" style="padding:26px;"><p style="margin:0;">No classes added for Day Order ${doInfo.value} yet.</p></div>`;
         } else if (doInfo.type === 'holiday') {
           ringHtml = `<div class="do-ring" style="background:rgba(139,147,166,0.25)"><div class="do-ring-inner"><div class="do-ring-num" style="font-size:20px;">Off</div></div></div>`;
-          metaHtml = `<div class="ring-meta"><div class="ring-meta-title">Holiday</div><div class="ring-meta-sub">${doInfo.auto ? 'Weekly off' : 'Marked as holiday'} — no classes today.</div></div>`;
+          metaHtml = `<div class="ring-meta"><div class="ring-meta-title">Holiday</div><div class="ring-meta-sub">${doInfo.reason ? esc(doInfo.reason) : (doInfo.auto ? 'Weekly off' : 'Marked as holiday')} — no classes today.</div></div>`;
           classesHtml = '';
         } else if (doInfo.type === 'exam') {
           ringHtml = `<div class="do-ring" style="background:rgba(245,185,66,0.3)"><div class="do-ring-inner"><div class="do-ring-num" style="font-size:18px;">Exam</div></div></div>`;
@@ -294,8 +300,19 @@ export default function App() {
           classesHtml = '';
         }
 
+        const upcomingEvent = (() => {
+          const events = STATE.config?.academicEvents || [];
+          const today = todayStr();
+          const next = events.filter(e => e.date >= today).sort((a, b) => a.date.localeCompare(b.date))[0];
+          if (!next) return '';
+          const diff = daysBetween(today, next.date);
+          const when = diff === 0 ? 'today' : `in ${diff} day${diff > 1 ? 's' : ''}`;
+          return `<div class="note-box" style="margin-bottom:14px;">📅 <b>${esc(next.label)}</b> — ${when} (${next.date})</div>`;
+        })();
+
         return `
           <div class="who-strip"><b>${esc(STATE.profile.name || 'You')}</b><span class="dot"></span>${esc(branchName(STATE.profile.branch))}<span class="dot"></span>${BATCH_META[STATE.profile.batch].label}</div>
+          ${upcomingEvent}
           <div class="datenav">
             <button class="datenav-btn" data-action="date-prev">‹</button>
             <div class="datenav-mid">
@@ -511,8 +528,20 @@ export default function App() {
             <button class="icon-btn" data-action="delete-class" data-scope="${c.scope}" data-do="${doTab}" data-id="${c.id}">✕</button>
           </div>`).join('') : `<div style="font-size:12px;color:var(--text-dim2);padding:6px 0 12px;">No classes added for Day Order ${doTab} yet.</div>`;
 
+        const academicEventsHtml = (cfg.academicEvents && cfg.academicEvents.length) ? `
+          <div class="section-label">Academic calendar</div>
+          <div class="card">
+            ${cfg.academicEvents.slice().sort((a, b) => a.date.localeCompare(b.date)).map(ev => {
+              const diff = daysBetween(todayStr(), ev.date);
+              const when = diff === 0 ? 'Today' : diff > 0 ? `in ${diff} day${diff > 1 ? 's' : ''}` : `${Math.abs(diff)} day${Math.abs(diff) > 1 ? 's' : ''} ago`;
+              return `<div class="override-row"><div><div style="font-weight:600;font-size:13px;">${esc(ev.label)}</div><div style="font-size:11px;color:var(--text-dim);">${ev.date}</div></div><div style="font-size:11px;color:var(--text-dim2);white-space:nowrap;">${when}</div></div>`;
+            }).join('')}
+          </div>
+        ` : '';
+
         return `
           <div class="note-box" style="margin-bottom:16px;">Editing <b>${esc(branchName(STATE.profile.branch))}</b> — changes here are visible to everyone who picks this class.</div>
+          ${academicEventsHtml}
 
           <div class="section-label">Day Order calendar</div>
           <div class="card">
@@ -647,6 +676,20 @@ export default function App() {
               ${STATE.branches.length ? `<select id="pfBranch">${options}</select>` : `<div class="hint" style="margin:0;">No classes exist yet — create one below.</div>`}
             </div>
 
+            ${!STATE.creatingBranch ? `
+              <div class="field" style="margin-bottom:14px;">
+                <label>Ready-made classes</label>
+                <div class="preset-list">
+                  ${PRESETS.map(p => `
+                    <button class="preset-btn" data-action="use-preset" data-slug="${p.slug}">
+                      <div class="preset-btn-name">${esc(p.name)}</div>
+                      <div class="preset-btn-sub">${Object.keys(p.subjects).length} subjects · Day Order 1–5 timetable · holidays &amp; exam dates included</div>
+                    </button>
+                  `).join('')}
+                </div>
+              </div>
+            ` : ''}
+
             ${STATE.creatingBranch ? `
               <div class="field">
                 <label>New class name</label>
@@ -657,7 +700,7 @@ export default function App() {
                 <button class="btn secondary full" data-action="cancel-create-branch">Cancel</button>
               </div>
             ` : `
-              <button class="btn secondary full" data-action="start-create-branch" style="margin-bottom:14px;">+ Create a new class</button>
+              <button class="btn secondary full" data-action="start-create-branch" style="margin-bottom:14px;">+ Create a new class from scratch</button>
             `}
 
             <div class="field"><label>Batch</label>
@@ -837,6 +880,41 @@ export default function App() {
           await loadBranchData(slug);
           await saveProfile();
           toast('Class created');
+          render();
+        }
+        else if (action === 'use-preset') {
+          const preset = PRESETS.find(p => p.slug === el.dataset.slug);
+          if (!preset) return;
+          if (!STATE.branches.find(b => b.slug === preset.slug)) {
+            STATE.branches.push({ slug: preset.slug, name: preset.name });
+            await saveBranches();
+          }
+          await loadBranchData(preset.slug);
+          // Only seed the timetable if this shared class hasn't already been
+          // seeded before (so re-picking it later doesn't wipe anyone's edits).
+          if (STATE.config.seededFrom !== preset.slug) {
+            STATE.config = {
+              startDate: preset.startDate,
+              startDayOrder: preset.startDayOrder,
+              skipDays: [0, 6],
+              overrides: buildPresetOverrides(preset),
+              academicEvents: preset.academicEvents,
+              seededFrom: preset.slug
+            };
+            const tt = buildPresetTimetable(preset);
+            STATE.common = tt.common;
+            STATE.batch1 = tt.batch1;
+            STATE.batch2 = tt.batch2;
+            await saveConfig();
+            await saveCollection('common');
+            await saveCollection('batch1');
+            await saveCollection('batch2');
+          }
+          STATE.profile.branch = preset.slug;
+          STATE.creatingBranch = false;
+          await saveProfile();
+          toast(`${preset.name} set up`);
+          STATE.tab = 'today';
           render();
         }
       });
