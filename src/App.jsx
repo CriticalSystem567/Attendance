@@ -54,6 +54,11 @@ export default function App() {
         profile: null,
         config: null,
         common: null, batch1: null, batch2: null,
+        sharedConfig: null, sharedCommon: null, sharedBatch1: null, sharedBatch2: null,
+        hasPersonal: false,
+        changeRequests: [],
+        birthdays: {},
+        savedLogins: [],
         assignments: [],
         assignmentStatus: {},
         attendance: {},
@@ -69,30 +74,94 @@ export default function App() {
 
       const bk = slug => `branch__${slug}__`;
 
+      function currentUid() { return STATE.session && STATE.session.user ? STATE.session.user.id : null; }
+      // A class has one admin (whoever created it, or whoever first claims
+      // it for older classes made before this existed). Only the admin's
+      // edits change the timetable for everyone; anyone else's edits are
+      // personal-only until the admin approves a "request".
+      function isAdmin() {
+        const b = STATE.branches.find(x => x.slug === STATE.profile.branch);
+        if (!b || !b.createdBy) return false;
+        return b.createdBy === currentUid();
+      }
+      function isUnclaimed() {
+        const b = STATE.branches.find(x => x.slug === STATE.profile.branch);
+        return !!b && !b.createdBy;
+      }
+      // Non-admins start out pointing at the SAME in-memory object as the
+      // shared data (no personal copy exists yet). Call this before any
+      // in-place edit so we clone first — otherwise mutating STATE.config
+      // would also mutate STATE.sharedConfig in memory before the (correctly
+      // routed) save even happens.
+      function ensurePersonal() {
+        if (isAdmin()) return;
+        if (STATE.config === STATE.sharedConfig) STATE.config = JSON.parse(JSON.stringify(STATE.sharedConfig));
+        if (STATE.common === STATE.sharedCommon) STATE.common = JSON.parse(JSON.stringify(STATE.sharedCommon));
+        if (STATE.batch1 === STATE.sharedBatch1) STATE.batch1 = JSON.parse(JSON.stringify(STATE.sharedBatch1));
+        if (STATE.batch2 === STATE.sharedBatch2) STATE.batch2 = JSON.parse(JSON.stringify(STATE.sharedBatch2));
+      }
+
       async function loadBranches() { STATE.branches = (await storageGet('branches', true)) || []; }
       async function saveBranches() { await storageSet('branches', STATE.branches, true); }
 
       async function loadBranchData(slug) {
         if (!slug) {
           STATE.config = null; STATE.common = emptyDOMap(); STATE.batch1 = emptyDOMap(); STATE.batch2 = emptyDOMap(); STATE.assignments = [];
+          STATE.sharedConfig = null; STATE.sharedCommon = null; STATE.sharedBatch1 = null; STATE.sharedBatch2 = null;
+          STATE.hasPersonal = false; STATE.changeRequests = []; STATE.birthdays = {};
           return;
         }
-        const [config, common, batch1, batch2, assignments] = await Promise.all([
+        const [config, common, batch1, batch2, assignments, pConfig, pCommon, pBatch1, pBatch2, changeRequests, birthdays] = await Promise.all([
           storageGet(bk(slug) + 'config', true),
           storageGet(bk(slug) + 'common', true),
           storageGet(bk(slug) + 'batch1', true),
           storageGet(bk(slug) + 'batch2', true),
-          storageGet(bk(slug) + 'assignments', true)
+          storageGet(bk(slug) + 'assignments', true),
+          storageGet(bk(slug) + 'p_config', false),
+          storageGet(bk(slug) + 'p_common', false),
+          storageGet(bk(slug) + 'p_batch1', false),
+          storageGet(bk(slug) + 'p_batch2', false),
+          storageGet(bk(slug) + 'changeRequests', true),
+          storageGet(bk(slug) + 'birthdays', true)
         ]);
-        STATE.config = config || { startDate: todayStr(), startDayOrder: 1, skipDays: [0, 6], overrides: {}, academicEvents: [] };
-        if (!STATE.config.academicEvents) STATE.config.academicEvents = [];
-        STATE.common = common || emptyDOMap();
-        STATE.batch1 = batch1 || emptyDOMap();
-        STATE.batch2 = batch2 || emptyDOMap();
+        STATE.sharedConfig = config || { startDate: todayStr(), startDayOrder: 1, skipDays: [0, 6], overrides: {}, academicEvents: [] };
+        if (!STATE.sharedConfig.academicEvents) STATE.sharedConfig.academicEvents = [];
+        STATE.sharedCommon = common || emptyDOMap();
+        STATE.sharedBatch1 = batch1 || emptyDOMap();
+        STATE.sharedBatch2 = batch2 || emptyDOMap();
+        STATE.hasPersonal = !!(pConfig || pCommon || pBatch1 || pBatch2);
+        STATE.config = pConfig || STATE.sharedConfig;
+        if (!STATE.config.academicEvents) STATE.config.academicEvents = STATE.sharedConfig.academicEvents;
+        STATE.common = pCommon || STATE.sharedCommon;
+        STATE.batch1 = pBatch1 || STATE.sharedBatch1;
+        STATE.batch2 = pBatch2 || STATE.sharedBatch2;
         STATE.assignments = assignments || [];
+        STATE.changeRequests = changeRequests || [];
+        STATE.birthdays = birthdays || {};
       }
-      async function saveConfig() { await storageSet(bk(STATE.profile.branch) + 'config', STATE.config, true); }
-      async function saveCollection(key) { await storageSet(bk(STATE.profile.branch) + key, STATE[key], true); }
+      // Admins write straight to the shared class data (everyone sees it).
+      // Everyone else writes to a personal overlay only they see.
+      async function saveConfig() {
+        if (isAdmin()) { STATE.sharedConfig = STATE.config; await storageSet(bk(STATE.profile.branch) + 'config', STATE.config, true); }
+        else { STATE.hasPersonal = true; await storageSet(bk(STATE.profile.branch) + 'p_config', STATE.config, false); }
+      }
+      async function saveCollection(key) {
+        const sharedKey = 'shared' + key[0].toUpperCase() + key.slice(1);
+        if (isAdmin()) { STATE[sharedKey] = STATE[key]; await storageSet(bk(STATE.profile.branch) + key, STATE[key], true); }
+        else { STATE.hasPersonal = true; await storageSet(bk(STATE.profile.branch) + 'p_' + key, STATE[key], false); }
+      }
+      async function discardPersonalOverride() {
+        const slug = STATE.profile.branch;
+        await Promise.all([
+          storageSet(bk(slug) + 'p_config', null, false),
+          storageSet(bk(slug) + 'p_common', null, false),
+          storageSet(bk(slug) + 'p_batch1', null, false),
+          storageSet(bk(slug) + 'p_batch2', null, false)
+        ]);
+        await loadBranchData(slug);
+      }
+      async function saveChangeRequests() { await storageSet(bk(STATE.profile.branch) + 'changeRequests', STATE.changeRequests, true); }
+      async function saveBirthdays() { await storageSet(bk(STATE.profile.branch) + 'birthdays', STATE.birthdays, true); }
       async function saveAssignments() { await storageSet(bk(STATE.profile.branch) + 'assignments', STATE.assignments, true); }
       async function saveAssignmentStatus() { await storageSet('assignmentStatus', STATE.assignmentStatus, false); }
       async function saveProfile() { await storageSet('profile', STATE.profile, false); }
@@ -102,7 +171,11 @@ export default function App() {
       function computeDayOrder(dateStr) {
         const cfg = STATE.config;
         if (!cfg) return { type: 'unset' };
-        if (cfg.overrides[dateStr]) return cfg.overrides[dateStr];
+        // 'exam' overrides are a note, not a day-type override: CTs don't
+        // cancel classes, they just happen before the day's normal classes
+        // resume, so day-order keeps advancing normally through them.
+        const directOv = cfg.overrides[dateStr];
+        if (directOv && directOv.type !== 'exam') return directOv;
         const target = parseDate(dateStr);
         const start = parseDate(cfg.startDate);
         if (target < start) return { type: 'before_start' };
@@ -112,15 +185,82 @@ export default function App() {
           cur.setDate(cur.getDate() + 1);
           const cds = fmt(cur);
           const ov = cfg.overrides[cds];
-          if (ov) { if (ov.type === 'dayorder') currentDO = ov.value; }
+          if (ov && ov.type !== 'exam') { if (ov.type === 'dayorder') currentDO = ov.value; }
           else if (!cfg.skipDays.includes(cur.getDay()) && !holidayName(cds)) { currentDO = (currentDO % 5) + 1; }
         }
-        if (!cfg.overrides[dateStr]) {
+        if (!directOv) {
           if (cfg.skipDays.includes(target.getDay())) return { type: 'holiday', value: null, auto: true };
           const hName = holidayName(dateStr);
           if (hName) return { type: 'holiday', value: null, auto: true, reason: hName };
         }
-        return { type: 'dayorder', value: currentDO };
+        const result = { type: 'dayorder', value: currentDO };
+        if (directOv && directOv.type === 'exam') result.examNote = directOv.value || 'CT today';
+        return result;
+      }
+
+      // Is dateStr a non-working day (weekend / manual holiday / public holiday)?
+      function isOffDay(dateStr) {
+        const cfg = STATE.config;
+        if (!cfg) return false;
+        const ov = cfg.overrides[dateStr];
+        if (ov) return ov.type === 'holiday';
+        if (cfg.skipDays.includes(parseDate(dateStr).getDay())) return true;
+        return !!holidayName(dateStr);
+      }
+
+      // Finds runs of 3+ consecutive off-days ("long weekends") within the
+      // configured semester window, e.g. a Friday holiday next to a weekend.
+      function getLongWeekends() {
+        const cfg = STATE.config;
+        if (!cfg) return [];
+        const lastEvent = (cfg.academicEvents || []).map(e => e.date).sort().pop();
+        const rangeEnd = lastEvent || addDays(todayStr(), 120);
+        const runs = [];
+        let cur = cfg.startDate;
+        let runStart = null;
+        while (cur <= rangeEnd) {
+          if (isOffDay(cur)) {
+            if (!runStart) runStart = cur;
+          } else if (runStart) {
+            runs.push({ start: runStart, end: addDays(cur, -1) });
+            runStart = null;
+          }
+          cur = addDays(cur, 1);
+        }
+        if (runStart) runs.push({ start: runStart, end: addDays(cur, -1) });
+        return runs
+          .map(r => ({ ...r, days: daysBetween(r.start, r.end) + 1 }))
+          .filter(r => r.days >= 3);
+      }
+
+      // Notification feed for the Today screen: upcoming CTs, long weekends,
+      // and birthdays (yours + classmates'), all within the next 30 days.
+      function getNotifications() {
+        const items = [];
+        const today = todayStr();
+        (STATE.config?.academicEvents || []).forEach(ev => {
+          if (ev.date < today) return;
+          const days = daysBetween(today, ev.date);
+          if (days > 30) return;
+          items.push({ icon: '📝', label: ev.label, date: ev.date, days });
+        });
+        getLongWeekends().forEach(lw => {
+          if (lw.start < today) return;
+          const days = daysBetween(today, lw.start);
+          if (days > 30) return;
+          items.push({ icon: '🏖️', label: `${lw.days}-day long weekend`, date: lw.start, days });
+        });
+        const thisYear = new Date().getFullYear();
+        Object.entries(STATE.birthdays || {}).forEach(([uname, mmdd]) => {
+          if (!mmdd) return;
+          let next = `${thisYear}-${mmdd}`;
+          if (next < today) next = `${thisYear + 1}-${mmdd}`;
+          const days = daysBetween(today, next);
+          if (days > 30) return;
+          const isYou = uname === sessionUsername(STATE.session);
+          items.push({ icon: '🎂', label: isYou ? 'Your birthday' : `${uname}'s birthday`, date: next, days });
+        });
+        return items.sort((a, b) => a.days - b.days);
       }
 
       function getClassesForDO(doValue) {
@@ -284,15 +424,12 @@ export default function App() {
           ringHtml = `<div class="do-ring" style="background:conic-gradient(${segStops.join(',')})"><div class="do-ring-inner"><div class="do-ring-num">${doInfo.value}</div><div class="do-ring-label">of 5</div></div></div>`;
           const classes = getClassesForDO(doInfo.value);
           const marked = classes.filter(c => getStatus(d, c.id)).length;
-          metaHtml = `<div class="ring-meta"><div class="ring-meta-title">Day Order ${doInfo.value}</div><div class="ring-meta-sub">${classes.length} class${classes.length !== 1 ? 'es' : ''} scheduled${classes.length ? ` · ${marked}/${classes.length} marked` : ''}</div></div>`;
+          const ctNote = doInfo.examNote ? `<div class="ct-note">📝 ${esc(doInfo.examNote)} today — classes run as usual afterwards.</div>` : '';
+          metaHtml = `<div class="ring-meta"><div class="ring-meta-title">Day Order ${doInfo.value}</div><div class="ring-meta-sub">${classes.length} class${classes.length !== 1 ? 'es' : ''} scheduled${classes.length ? ` · ${marked}/${classes.length} marked` : ''}</div>${ctNote}</div>`;
           classesHtml = classes.length ? classes.map(c => renderClassCard(d, c)).join('') : `<div class="card empty" style="padding:26px;"><p style="margin:0;">No classes added for Day Order ${doInfo.value} yet.</p></div>`;
         } else if (doInfo.type === 'holiday') {
-          ringHtml = `<div class="do-ring" style="background:rgba(139,147,166,0.25)"><div class="do-ring-inner"><div class="do-ring-num" style="font-size:20px;">Off</div></div></div>`;
-          metaHtml = `<div class="ring-meta"><div class="ring-meta-title">Holiday</div><div class="ring-meta-sub">${doInfo.reason ? esc(doInfo.reason) : (doInfo.auto ? 'Weekly off' : 'Marked as holiday')} — no classes today.</div></div>`;
-          classesHtml = '';
-        } else if (doInfo.type === 'exam') {
-          ringHtml = `<div class="do-ring" style="background:rgba(245,185,66,0.3)"><div class="do-ring-inner"><div class="do-ring-num" style="font-size:18px;">Exam</div></div></div>`;
-          metaHtml = `<div class="ring-meta"><div class="ring-meta-title">Exam Day</div><div class="ring-meta-sub">Marked as an exam day — no regular classes.</div></div>`;
+          ringHtml = `<div class="do-ring" style="background:var(--holiday-dim)"><div class="do-ring-inner"><div class="do-ring-num" style="font-size:20px;color:var(--holiday);">Off</div></div></div>`;
+          metaHtml = `<div class="ring-meta"><div class="ring-meta-title" style="color:var(--holiday);">Holiday</div><div class="ring-meta-sub">${doInfo.reason ? esc(doInfo.reason) : (doInfo.auto ? 'Weekly off' : 'Marked as holiday')} — no classes today.</div></div>`;
           classesHtml = '';
         } else {
           ringHtml = `<div class="do-ring" style="background:rgba(255,255,255,0.08)"><div class="do-ring-inner"><div class="do-ring-num" style="font-size:16px;">—</div></div></div>`;
@@ -300,19 +437,26 @@ export default function App() {
           classesHtml = '';
         }
 
-        const upcomingEvent = (() => {
-          const events = STATE.config?.academicEvents || [];
-          const today = todayStr();
-          const next = events.filter(e => e.date >= today).sort((a, b) => a.date.localeCompare(b.date))[0];
-          if (!next) return '';
-          const diff = daysBetween(today, next.date);
-          const when = diff === 0 ? 'today' : `in ${diff} day${diff > 1 ? 's' : ''}`;
-          return `<div class="note-box" style="margin-bottom:14px;">📅 <b>${esc(next.label)}</b> — ${when} (${next.date})</div>`;
-        })();
+        const notifications = getNotifications().slice(0, 6);
+        const notificationsHtml = notifications.length ? `
+          <div class="section-label">Notifications</div>
+          <div class="card" style="padding:6px 4px;">
+            ${notifications.map(n => `
+              <div class="notif-row">
+                <div class="notif-ic">${n.icon}</div>
+                <div class="notif-body">
+                  <div class="notif-label">${esc(n.label)}</div>
+                  <div class="notif-date">${n.date}</div>
+                </div>
+                <div class="notif-days">${n.days === 0 ? 'Today' : n.days === 1 ? 'Tomorrow' : `${n.days} days`}</div>
+              </div>
+            `).join('')}
+          </div>
+        ` : '';
 
         return `
           <div class="who-strip"><b>${esc(STATE.profile.name || 'You')}</b><span class="dot"></span>${esc(branchName(STATE.profile.branch))}<span class="dot"></span>${BATCH_META[STATE.profile.batch].label}</div>
-          ${upcomingEvent}
+          ${notificationsHtml}
           <div class="datenav">
             <button class="datenav-btn" data-action="date-prev">‹</button>
             <div class="datenav-mid">
@@ -507,7 +651,7 @@ export default function App() {
         const overridesSorted = Object.entries(cfg.overrides).sort((a, b) => a[0].localeCompare(b[0]));
         const overridesHtml = overridesSorted.length ? overridesSorted.map(([date, ov]) => `
           <div class="override-row">
-            <div><div style="font-weight:600;font-size:13px;">${date}</div><div style="font-size:11px;color:var(--text-dim);">${ov.type === 'dayorder' ? 'Forced Day Order ' + ov.value : ov.type === 'exam' ? 'Exam day' : 'Holiday'}</div></div>
+            <div><div style="font-weight:600;font-size:13px;">${date}</div><div style="font-size:11px;color:var(--text-dim);">${ov.type === 'dayorder' ? 'Forced Day Order ' + ov.value : ov.type === 'exam' ? (ov.value ? esc(ov.value) : 'CT day') : 'Holiday'}</div></div>
             <button class="icon-btn" data-action="delete-override" data-date="${date}">✕</button>
           </div>`).join('') : `<div style="font-size:12px;color:var(--text-dim2);padding:4px 0 2px;">No exceptions added yet.</div>`;
 
@@ -539,9 +683,49 @@ export default function App() {
           </div>
         ` : '';
 
+        const pendingRequestsHtml = (isAdmin() && STATE.changeRequests.length) ? `
+          <div class="section-label">Pending requests</div>
+          <div class="card">
+            ${STATE.changeRequests.map(r => `
+              <div class="override-row" style="align-items:flex-start;">
+                <div>
+                  <div style="font-weight:600;font-size:13px;">${esc(r.by)}</div>
+                  <div style="font-size:11.5px;color:var(--text-dim);margin-top:2px;">${esc(r.note) || 'No description given'}</div>
+                </div>
+                <div style="display:flex;gap:6px;">
+                  <button class="icon-btn" style="color:var(--accent);" data-action="approve-request" data-id="${r.id}">✓</button>
+                  <button class="icon-btn" data-action="reject-request" data-id="${r.id}">✕</button>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        ` : '';
+
+        const longWeekends = getLongWeekends().filter(lw => lw.end >= todayStr());
+        const longWeekendsHtml = longWeekends.length ? `
+          <div class="section-label">Upcoming long weekends</div>
+          <div class="card">
+            ${longWeekends.map(lw => `<div class="override-row"><div><div style="font-weight:600;font-size:13px;">${lw.start} → ${lw.end}</div><div style="font-size:11px;color:var(--text-dim);">${lw.days} days off in a row</div></div></div>`).join('')}
+          </div>
+        ` : '';
+
+        const permissionBanner = isAdmin()
+          ? `<div class="note-box" style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;gap:10px;">
+               <span>Editing <b>${esc(branchName(STATE.profile.branch))}</b> — you're the admin, so changes here apply to everyone.</span>
+               <button class="icon-btn" data-action="rename-branch" title="Rename class">✎</button>
+             </div>`
+          : isUnclaimed()
+          ? `<div class="note-box" style="margin-bottom:16px;">This class has no admin yet. <button class="btn secondary" style="margin-top:8px;" data-action="claim-admin">Become admin of this class</button></div>`
+          : `<div class="note-box" style="margin-bottom:16px;">
+               You're not the admin of <b>${esc(branchName(STATE.profile.branch))}</b> — changes you make below are personal to you only.
+               ${STATE.hasPersonal ? `<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;"><button class="btn secondary" data-action="request-change">Request this for everyone</button><button class="btn secondary" data-action="discard-personal">Discard my changes</button></div>` : ''}
+             </div>`;
+
         return `
-          <div class="note-box" style="margin-bottom:16px;">Editing <b>${esc(branchName(STATE.profile.branch))}</b> — changes here are visible to everyone who picks this class.</div>
+          ${permissionBanner}
+          ${pendingRequestsHtml}
           ${academicEventsHtml}
+          ${longWeekendsHtml}
 
           <div class="section-label">Day Order calendar</div>
           <div class="card">
@@ -553,19 +737,21 @@ export default function App() {
             <button class="btn full" data-action="save-calendar-config">Save calendar settings</button>
           </div>
 
-          <div class="section-label">Exceptions — holidays, exams, long weekends</div>
+          <div class="section-label">Exceptions — holidays, CTs, long weekends</div>
           <div class="card">
             <div class="field"><label>Date</label><input type="date" id="ovDate"></div>
             <div class="field"><label>Type</label>
               <select id="ovType">
                 <option value="holiday">Holiday / long weekend</option>
-                <option value="exam">Exam day</option>
+                <option value="exam">CT day (classes resume after)</option>
                 <option value="dayorder">Force a specific Day Order</option>
               </select>
             </div>
             <div class="field" id="ovValueWrap" style="display:none;"><label>Day Order</label>
               <select id="ovValue">${[1, 2, 3, 4, 5].map(n => `<option value="${n}">Day Order ${n}</option>`).join('')}</select>
             </div>
+            <div class="field" id="ovExamNoteWrap" style="display:none;"><label>CT note (optional — e.g. subject name)</label>
+              <input type="text" id="ovExamNote" placeholder="e.g. CT-1: Digital System Design"></div>
             <button class="btn full secondary" data-action="add-override">Add exception</button>
             <div style="margin-top:14px;">${overridesHtml}</div>
           </div>
@@ -709,7 +895,33 @@ export default function App() {
                 <option value="batch2" ${STATE.profile.batch === 'batch2' ? 'selected' : ''}>Batch 2</option>
               </select>
             </div>
+            <div class="field"><label>Your birthday <span style="font-weight:400;color:var(--text-dim2);">(optional — shown to classmates as a reminder, year kept private)</span></label>
+              <input type="date" id="pfBirthday" value="${esc(STATE.profile.birthday || '')}">
+            </div>
             <button class="btn full" data-action="save-profile">Save profile</button>
+          </div>
+
+          <div class="section-label">Saved logins</div>
+          <div class="card">
+            <p class="hint">For your own convenience only — stored on your account, not shared with classmates, but not encrypted either. Avoid saving anything highly sensitive here.</p>
+            ${STATE.savedLogins.length ? STATE.savedLogins.map(l => `
+              <div class="login-row">
+                <div class="login-info">
+                  <div class="login-label">${esc(l.label)}</div>
+                  ${l.username ? `<div class="login-sub">${esc(l.username)}</div>` : ''}
+                  ${l.password ? `<div class="login-sub">Password: <span class="login-pw" data-action="toggle-login-visibility" data-pw="${esc(l.password)}">••••••••</span></div>` : ''}
+                </div>
+                <button class="icon-btn" data-action="delete-login" data-id="${l.id}">✕</button>
+              </div>
+            `).join('') : ''}
+            <div style="border-top:1px solid var(--border);margin-top:${STATE.savedLogins.length ? '10px' : '0'};padding-top:14px;">
+              <div class="field"><label>Name</label><input type="text" id="liLabel" placeholder="e.g. SRM Student Portal"></div>
+              <div class="row2">
+                <div class="field"><label>Username</label><input type="text" id="liUsername" placeholder="Optional"></div>
+                <div class="field"><label>Password</label><input type="text" id="liPassword" placeholder="Optional"></div>
+              </div>
+              <button class="btn secondary full" data-action="add-login">Save login</button>
+            </div>
           </div>
 
           <div class="section-label">Your data</div>
@@ -772,12 +984,14 @@ export default function App() {
         }
 
         else if (action === 'toggle-skip') {
+          ensurePersonal();
           const day = Number(el.dataset.day);
           const idx = STATE.config.skipDays.indexOf(day);
           if (idx > -1) STATE.config.skipDays.splice(idx, 1); else STATE.config.skipDays.push(day);
           render();
         }
         else if (action === 'save-calendar-config') {
+          ensurePersonal();
           const startDate = document.getElementById('cfgStartDate').value;
           if (!startDate) { toast('Pick a start date'); return; }
           STATE.config.startDate = startDate;
@@ -787,21 +1001,31 @@ export default function App() {
           render();
         }
         else if (action === 'add-override') {
+          ensurePersonal();
           const date = document.getElementById('ovDate').value;
           const type = document.getElementById('ovType').value;
           if (!date) { toast('Pick a date'); return; }
-          STATE.config.overrides[date] = type === 'dayorder' ? { type: 'dayorder', value: Number(document.getElementById('ovValue').value) } : { type, value: null };
+          if (type === 'dayorder') {
+            STATE.config.overrides[date] = { type: 'dayorder', value: Number(document.getElementById('ovValue').value) };
+          } else if (type === 'exam') {
+            const note = document.getElementById('ovExamNote').value.trim();
+            STATE.config.overrides[date] = { type: 'exam', value: note || null };
+          } else {
+            STATE.config.overrides[date] = { type, value: null };
+          }
           await saveConfig();
           toast('Exception added');
           render();
         }
         else if (action === 'delete-override') {
+          ensurePersonal();
           delete STATE.config.overrides[el.dataset.date];
           await saveConfig();
           render();
         }
         else if (action === 'set-do-tab') { STATE.setupDoTab = el.dataset.do; render(); }
         else if (action === 'add-class') {
+          ensurePersonal();
           const subject = document.getElementById('clsSubject').value.trim();
           const start = document.getElementById('clsStart').value;
           const end = document.getElementById('clsEnd').value;
@@ -818,6 +1042,7 @@ export default function App() {
           render();
         }
         else if (action === 'delete-class') {
+          ensurePersonal();
           const list = STATE[el.dataset.scope][el.dataset.do];
           const idx = list.findIndex(c => c.id === el.dataset.id);
           if (idx > -1) { list.splice(idx, 1); await saveCollection(el.dataset.scope); render(); }
@@ -849,10 +1074,17 @@ export default function App() {
           const branchSelect = document.getElementById('pfBranch');
           const branch = branchSelect ? branchSelect.value : STATE.profile.branch;
           const batch = document.getElementById('pfBatch').value;
+          const birthday = (document.getElementById('pfBirthday') || {}).value || '';
           const branchChanged = branch !== STATE.profile.branch;
-          STATE.profile = { name, branch: branch || null, batch };
+          STATE.profile = { name, branch: branch || null, batch, birthday };
           await saveProfile();
           if (branchChanged) await loadBranchData(STATE.profile.branch);
+          const uname = sessionUsername(STATE.session);
+          if (uname && STATE.profile.branch) {
+            const mmdd = birthday ? birthday.slice(5) : '';
+            if (mmdd) STATE.birthdays[uname] = mmdd; else delete STATE.birthdays[uname];
+            await saveBirthdays();
+          }
           toast('Profile saved');
           STATE.tab = 'today';
           render();
@@ -872,7 +1104,7 @@ export default function App() {
           if (!name) { toast('Give your class a name'); return; }
           const slug = slugify(name);
           if (!STATE.branches.find(b => b.slug === slug)) {
-            STATE.branches.push({ slug, name });
+            STATE.branches.push({ slug, name, createdBy: currentUid() });
             await saveBranches();
           }
           STATE.profile.branch = slug;
@@ -886,7 +1118,7 @@ export default function App() {
           const preset = PRESETS.find(p => p.slug === el.dataset.slug);
           if (!preset) return;
           if (!STATE.branches.find(b => b.slug === preset.slug)) {
-            STATE.branches.push({ slug: preset.slug, name: preset.name });
+            STATE.branches.push({ slug: preset.slug, name: preset.name, createdBy: currentUid() });
             await saveBranches();
           }
           // Must set profile.branch BEFORE loading/saving, since loadBranchData,
@@ -897,7 +1129,7 @@ export default function App() {
           await loadBranchData(preset.slug);
           // Only seed the timetable if this shared class hasn't already been
           // seeded before (so re-picking it later doesn't wipe anyone's edits).
-          if (STATE.config.seededFrom !== preset.slug) {
+          if (STATE.sharedConfig.seededFrom !== preset.slug) {
             STATE.config = {
               startDate: preset.startDate,
               startDayOrder: preset.startDayOrder,
@@ -921,11 +1153,95 @@ export default function App() {
           STATE.tab = 'today';
           render();
         }
+        else if (action === 'rename-branch') {
+          if (!isAdmin() && !isUnclaimed()) { toast('Only the class admin can rename it'); return; }
+          const b = STATE.branches.find(x => x.slug === STATE.profile.branch);
+          const newName = prompt('Rename class to:', b.name);
+          if (!newName || !newName.trim()) return;
+          b.name = newName.trim();
+          await saveBranches();
+          toast('Class renamed');
+          render();
+        }
+        else if (action === 'claim-admin') {
+          const b = STATE.branches.find(x => x.slug === STATE.profile.branch);
+          if (!b || b.createdBy) return;
+          b.createdBy = currentUid();
+          await saveBranches();
+          toast('You are now the admin of this class');
+          render();
+        }
+        else if (action === 'discard-personal') {
+          if (!confirm('Discard your personal timetable changes and go back to the class default?')) return;
+          await discardPersonalOverride();
+          toast('Personal changes discarded');
+          render();
+        }
+        else if (action === 'request-change') {
+          const note = prompt('Briefly describe the change you want applied for everyone:');
+          if (note === null) return;
+          STATE.changeRequests.push({
+            id: uid(), by: sessionUsername(STATE.session), note: note.trim(),
+            snapshot: { config: STATE.config, common: STATE.common, batch1: STATE.batch1, batch2: STATE.batch2 },
+            createdAt: todayStr()
+          });
+          await saveChangeRequests();
+          toast('Request sent to the class admin');
+          render();
+        }
+        else if (action === 'approve-request') {
+          if (!isAdmin()) return;
+          const reqId = el.dataset.id;
+          const req = STATE.changeRequests.find(r => r.id === reqId);
+          if (!req) return;
+          STATE.config = req.snapshot.config;
+          STATE.common = req.snapshot.common;
+          STATE.batch1 = req.snapshot.batch1;
+          STATE.batch2 = req.snapshot.batch2;
+          await saveConfig();
+          await saveCollection('common');
+          await saveCollection('batch1');
+          await saveCollection('batch2');
+          STATE.changeRequests = STATE.changeRequests.filter(r => r.id !== reqId);
+          await saveChangeRequests();
+          toast('Change applied for everyone');
+          render();
+        }
+        else if (action === 'reject-request') {
+          if (!isAdmin()) return;
+          STATE.changeRequests = STATE.changeRequests.filter(r => r.id !== el.dataset.id);
+          await saveChangeRequests();
+          toast('Request dismissed');
+          render();
+        }
+        else if (action === 'add-login') {
+          const label = document.getElementById('liLabel').value.trim();
+          const username = document.getElementById('liUsername').value.trim();
+          const password = document.getElementById('liPassword').value;
+          if (!label) { toast('Give it a name, e.g. "SRM Student Portal"'); return; }
+          STATE.savedLogins.push({ id: uid(), label, username, password });
+          await storageSet('savedLogins', STATE.savedLogins, false);
+          document.getElementById('liLabel').value = '';
+          document.getElementById('liUsername').value = '';
+          document.getElementById('liPassword').value = '';
+          render();
+        }
+        else if (action === 'delete-login') {
+          STATE.savedLogins = STATE.savedLogins.filter(l => l.id !== el.dataset.id);
+          await storageSet('savedLogins', STATE.savedLogins, false);
+          render();
+        }
+        else if (action === 'toggle-login-visibility') {
+          const row = el.closest('.login-row');
+          const pwSpan = row.querySelector('.login-pw');
+          pwSpan.textContent = pwSpan.textContent === '••••••••' ? el.dataset.pw : '••••••••';
+        }
       });
 
       document.addEventListener('change', (e) => {
         if (e.target.id === 'ovType') {
           document.getElementById('ovValueWrap').style.display = e.target.value === 'dayorder' ? 'block' : 'none';
+          document.getElementById('ovExamNoteWrap').style.display = e.target.value === 'exam' ? 'block' : 'none';
         }
       });
 
@@ -934,6 +1250,7 @@ export default function App() {
         STATE.profile = (await storageGet('profile', false)) || { name: '', branch: null, batch: 'batch1' };
         STATE.attendance = (await storageGet('attendance', false)) || {};
         STATE.assignmentStatus = (await storageGet('assignmentStatus', false)) || {};
+        STATE.savedLogins = (await storageGet('savedLogins', false)) || [];
         await loadBranches();
         await loadBranchData(STATE.profile.branch);
         STATE.tab = 'today';
@@ -943,6 +1260,7 @@ export default function App() {
         STATE.profile = null; STATE.branches = []; STATE.config = null;
         STATE.common = null; STATE.batch1 = null; STATE.batch2 = null;
         STATE.assignments = []; STATE.assignmentStatus = {}; STATE.attendance = {};
+        STATE.savedLogins = []; STATE.changeRequests = []; STATE.birthdays = {};
         STATE.tab = 'today'; STATE.viewDate = todayStr(); STATE.creatingBranch = false;
       }
 

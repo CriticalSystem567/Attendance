@@ -54,8 +54,8 @@ export const PRESETS = [
     academicEvents: [
       { label: 'Enrollment', date: '2026-07-20' },
       { label: 'Classes start', date: '2026-07-21' },
-      { label: 'FT-1 / CA-1', date: '2026-09-16' },
-      { label: 'FT-2 / CA-2 & practical exams start', date: '2026-11-10' },
+      { label: 'CT-1 / CA-1', date: '2026-09-16' },
+      { label: 'CT-2 / CA-2 & practical exams start', date: '2026-11-10' },
       { label: 'Last working day', date: '2026-11-20' },
       { label: 'Theory exams start', date: '2026-11-25' },
       { label: 'Next semester enrollment', date: '2027-01-06' }
@@ -94,14 +94,14 @@ export function buildPresetTimetable(preset) {
   return result;
 }
 
-// Marks FT/CA/exam dates from academicEvents as "exam day" overrides so
-// they show up correctly on the Today screen and don't advance the Day
-// Order cycle.
+// Marks CT/FT/CA/exam dates from academicEvents as "exam" overrides. These
+// no longer block the day — computeDayOrder treats them as a note on top of
+// a normal working day, since classes resume as usual after the CT.
 export function buildPresetOverrides(preset) {
   const overrides = {};
   (preset.academicEvents || []).forEach(ev => {
-    if (/exam|FT-1|FT-2|CA-1|CA-2/i.test(ev.label)) {
-      overrides[ev.date] = { type: 'exam', value: null };
+    if (/exam|CT-|FT-|CA-/i.test(ev.label)) {
+      overrides[ev.date] = { type: 'exam', value: ev.label };
     }
   });
   return overrides;
