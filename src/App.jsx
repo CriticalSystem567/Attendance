@@ -337,10 +337,12 @@ export default function App() {
         else if (STATE.tab === 'subjects') main.innerHTML = renderSubjects();
         else if (STATE.tab === 'setup') main.innerHTML = renderSetup();
         else if (STATE.tab === 'assignments') main.innerHTML = renderAssignments();
+        else if (STATE.tab === 'notifications') main.innerHTML = renderNotifications();
         else main.innerHTML = renderProfile();
       }
 
       function renderAppShell() {
+        const soon = STATE.profile && STATE.profile.branch ? (getNotifications()[0]?.days ?? 99) <= 3 : false;
         return `
           <div class="app with-nav" id="app">
             <div class="topbar">
@@ -358,6 +360,7 @@ export default function App() {
               <button class="nav-btn" data-action="nav-tab" data-tab="calendar"><span class="ic">▦</span><span class="lb">Calendar</span></button>
               <button class="nav-btn" data-action="nav-tab" data-tab="subjects"><span class="ic">▤</span><span class="lb">Subjects</span></button>
               <button class="nav-btn" data-action="nav-tab" data-tab="setup"><span class="ic">⚙</span><span class="lb">Timetable</span></button>
+              <button class="nav-btn" data-action="nav-tab" data-tab="notifications"><span class="ic">🔔${soon ? '<span class="nav-dot"></span>' : ''}</span><span class="lb">Alerts</span></button>
               <button class="nav-btn" data-action="nav-tab" data-tab="assignments"><span class="ic">✎</span><span class="lb">Tasks</span></button>
               <button class="nav-btn" data-action="nav-tab" data-tab="profile"><span class="ic">◍</span><span class="lb">Profile</span></button>
             </div>
@@ -437,20 +440,11 @@ export default function App() {
           classesHtml = '';
         }
 
-        const notifications = getNotifications().slice(0, 6);
-        const notificationsHtml = notifications.length ? `
-          <div class="section-label">Notifications</div>
-          <div class="card" style="padding:6px 4px;">
-            ${notifications.map(n => `
-              <div class="notif-row">
-                <div class="notif-ic">${n.icon}</div>
-                <div class="notif-body">
-                  <div class="notif-label">${esc(n.label)}</div>
-                  <div class="notif-date">${n.date}</div>
-                </div>
-                <div class="notif-days">${n.days === 0 ? 'Today' : n.days === 1 ? 'Tomorrow' : `${n.days} days`}</div>
-              </div>
-            `).join('')}
+        const nextNotif = getNotifications()[0];
+        const notificationsHtml = nextNotif ? `
+          <div class="note-box notif-teaser" data-action="nav-tab" data-tab="notifications" style="margin-bottom:14px;cursor:pointer;">
+            <span>${nextNotif.icon} <b>${esc(nextNotif.label)}</b> — ${nextNotif.days === 0 ? 'today' : nextNotif.days === 1 ? 'tomorrow' : `in ${nextNotif.days} days`}</span>
+            <span class="notif-teaser-more">See all ›</span>
           </div>
         ` : '';
 
@@ -672,17 +666,6 @@ export default function App() {
             <button class="icon-btn" data-action="delete-class" data-scope="${c.scope}" data-do="${doTab}" data-id="${c.id}">✕</button>
           </div>`).join('') : `<div style="font-size:12px;color:var(--text-dim2);padding:6px 0 12px;">No classes added for Day Order ${doTab} yet.</div>`;
 
-        const academicEventsHtml = (cfg.academicEvents && cfg.academicEvents.length) ? `
-          <div class="section-label">Academic calendar</div>
-          <div class="card">
-            ${cfg.academicEvents.slice().sort((a, b) => a.date.localeCompare(b.date)).map(ev => {
-              const diff = daysBetween(todayStr(), ev.date);
-              const when = diff === 0 ? 'Today' : diff > 0 ? `in ${diff} day${diff > 1 ? 's' : ''}` : `${Math.abs(diff)} day${Math.abs(diff) > 1 ? 's' : ''} ago`;
-              return `<div class="override-row"><div><div style="font-weight:600;font-size:13px;">${esc(ev.label)}</div><div style="font-size:11px;color:var(--text-dim);">${ev.date}</div></div><div style="font-size:11px;color:var(--text-dim2);white-space:nowrap;">${when}</div></div>`;
-            }).join('')}
-          </div>
-        ` : '';
-
         const pendingRequestsHtml = (isAdmin() && STATE.changeRequests.length) ? `
           <div class="section-label">Pending requests</div>
           <div class="card">
@@ -701,31 +684,19 @@ export default function App() {
           </div>
         ` : '';
 
-        const longWeekends = getLongWeekends().filter(lw => lw.end >= todayStr());
-        const longWeekendsHtml = longWeekends.length ? `
-          <div class="section-label">Upcoming long weekends</div>
-          <div class="card">
-            ${longWeekends.map(lw => `<div class="override-row"><div><div style="font-weight:600;font-size:13px;">${lw.start} → ${lw.end}</div><div style="font-size:11px;color:var(--text-dim);">${lw.days} days off in a row</div></div></div>`).join('')}
-          </div>
-        ` : '';
-
         const permissionBanner = isAdmin()
           ? `<div class="note-box" style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;gap:10px;">
                <span>Editing <b>${esc(branchName(STATE.profile.branch))}</b> — you're the admin, so changes here apply to everyone.</span>
                <button class="icon-btn" data-action="rename-branch" title="Rename class">✎</button>
              </div>`
-          : isUnclaimed()
-          ? `<div class="note-box" style="margin-bottom:16px;">This class has no admin yet. <button class="btn secondary" style="margin-top:8px;" data-action="claim-admin">Become admin of this class</button></div>`
           : `<div class="note-box" style="margin-bottom:16px;">
-               You're not the admin of <b>${esc(branchName(STATE.profile.branch))}</b> — changes you make below are personal to you only.
+               ${isUnclaimed() ? `This class doesn't have an admin yet, so changes` : `You're not the admin of <b>${esc(branchName(STATE.profile.branch))}</b>, so changes you make`} below are personal to you only.
                ${STATE.hasPersonal ? `<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;"><button class="btn secondary" data-action="request-change">Request this for everyone</button><button class="btn secondary" data-action="discard-personal">Discard my changes</button></div>` : ''}
              </div>`;
 
         return `
           ${permissionBanner}
           ${pendingRequestsHtml}
-          ${academicEventsHtml}
-          ${longWeekendsHtml}
 
           <div class="section-label">Day Order calendar</div>
           <div class="card">
@@ -776,6 +747,54 @@ export default function App() {
               <button class="btn full secondary" data-action="add-class">+ Add class to Day Order ${doTab}</button>
             </div>
           </div>
+        `;
+      }
+
+      function renderNotifications() {
+        if (!STATE.profile.branch) {
+          return `<div class="card empty"><div class="ic">🔔</div><h3>No class set up yet</h3><p>Pick or create a class in Profile first.</p><button class="btn" data-action="nav-tab" data-tab="profile">Go to Profile</button></div>`;
+        }
+        const cfg = STATE.config;
+        const notifications = getNotifications();
+        const feedHtml = notifications.length ? `
+          <div class="card" style="padding:6px 4px;">
+            ${notifications.map(n => `
+              <div class="notif-row">
+                <div class="notif-ic">${n.icon}</div>
+                <div class="notif-body">
+                  <div class="notif-label">${esc(n.label)}</div>
+                  <div class="notif-date">${n.date}</div>
+                </div>
+                <div class="notif-days">${n.days === 0 ? 'Today' : n.days === 1 ? 'Tomorrow' : `${n.days} days`}</div>
+              </div>
+            `).join('')}
+          </div>
+        ` : `<div class="card empty" style="padding:26px;"><p style="margin:0;">Nothing coming up in the next 30 days.</p></div>`;
+
+        const academicEventsHtml = (cfg.academicEvents && cfg.academicEvents.length) ? `
+          <div class="section-label">Academic calendar</div>
+          <div class="card">
+            ${cfg.academicEvents.slice().sort((a, b) => a.date.localeCompare(b.date)).map(ev => {
+              const diff = daysBetween(todayStr(), ev.date);
+              const when = diff === 0 ? 'Today' : diff > 0 ? `in ${diff} day${diff > 1 ? 's' : ''}` : `${Math.abs(diff)} day${Math.abs(diff) > 1 ? 's' : ''} ago`;
+              return `<div class="override-row"><div><div style="font-weight:600;font-size:13px;">${esc(ev.label)}</div><div style="font-size:11px;color:var(--text-dim);">${ev.date}</div></div><div style="font-size:11px;color:var(--text-dim2);white-space:nowrap;">${when}</div></div>`;
+            }).join('')}
+          </div>
+        ` : '';
+
+        const longWeekends = getLongWeekends().filter(lw => lw.end >= todayStr());
+        const longWeekendsHtml = longWeekends.length ? `
+          <div class="section-label">Long weekends this semester</div>
+          <div class="card">
+            ${longWeekends.map(lw => `<div class="override-row"><div><div style="font-weight:600;font-size:13px;">${lw.start} → ${lw.end}</div><div style="font-size:11px;color:var(--text-dim);">${lw.days} days off in a row</div></div></div>`).join('')}
+          </div>
+        ` : '';
+
+        return `
+          <div class="section-label">Coming up</div>
+          ${feedHtml}
+          ${academicEventsHtml}
+          ${longWeekendsHtml}
         `;
       }
 
@@ -1161,14 +1180,6 @@ export default function App() {
           b.name = newName.trim();
           await saveBranches();
           toast('Class renamed');
-          render();
-        }
-        else if (action === 'claim-admin') {
-          const b = STATE.branches.find(x => x.slug === STATE.profile.branch);
-          if (!b || b.createdBy) return;
-          b.createdBy = currentUid();
-          await saveBranches();
-          toast('You are now the admin of this class');
           render();
         }
         else if (action === 'discard-personal') {
