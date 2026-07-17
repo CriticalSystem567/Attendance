@@ -89,7 +89,7 @@ h1,h2,h3{font-family:'Space Grotesk',sans-serif;margin:0;}
 }
 .brand{display:flex;align-items:center;gap:11px;}
 .brand-mark{
-  width:38px;height:38px;border-radius:12px;
+  width:48px;height:48px;border-radius:14px;
   background:linear-gradient(135deg,var(--accent),var(--violet));
   display:flex;align-items:center;justify-content:center;
   flex-shrink:0;overflow:hidden;
@@ -137,6 +137,8 @@ main{flex:1;padding:6px 20px 20px;}
 .who-strip{font-size:11.5px;color:var(--text-dim);margin-bottom:14px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
 .who-strip b{color:var(--text);font-weight:600;}
 .who-strip .dot{width:3px;height:3px;border-radius:50%;background:var(--text-dim2);}
+.greeting{font-family:'Space Grotesk';font-size:19px;font-weight:700;color:var(--text);margin-bottom:4px;}
+.greeting-dim{font-family:'Inter';font-size:12.5px;font-weight:500;color:var(--text-dim);}
 
 .ring-card{display:flex;align-items:center;gap:18px;}
 .do-ring{width:92px;height:92px;border-radius:50%;display:flex;align-items:center;justify-content:center;position:relative;flex-shrink:0;}
@@ -249,6 +251,9 @@ select option{background:#12172d;}
 .notif-days{font-size:11px;font-weight:700;color:var(--accent);background:var(--accent-dim);border-radius:8px;padding:3px 8px;white-space:nowrap;flex-shrink:0;}
 .notif-teaser{display:flex;align-items:center;justify-content:space-between;gap:10px;}
 .notif-teaser-more{font-size:11px;font-weight:700;color:var(--accent);white-space:nowrap;flex-shrink:0;}
+.attend-note{font-size:11px;line-height:1.45;padding:7px 10px;border-radius:9px;margin-top:9px;}
+.attend-note.good{color:var(--accent);background:var(--accent-dim);}
+.attend-note.bad{color:var(--holiday);background:var(--holiday-dim);}
 .login-row{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;padding:9px 2px;border-bottom:1px solid var(--border);}
 .login-row:last-of-type{border-bottom:none;}
 .login-info{min-width:0;}

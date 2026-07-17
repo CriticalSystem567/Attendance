@@ -347,7 +347,7 @@ export default function App() {
         return `
           <div class="app with-nav" id="app">
             <div class="topbar">
-              <div class="brand">
+              <div class="brand" data-action="nav-tab" data-tab="today" style="cursor:pointer;">
                 <div class="brand-mark"><img src="${logoUrl}" alt="" /></div>
                 <div>
                   <div class="brand-name">My Attendance Tracker <span class="brand-version">v${APP_VERSION}</span></div>
@@ -449,8 +449,13 @@ export default function App() {
           </div>
         ` : '';
 
+        const hour = new Date().getHours();
+        const greeting = hour < 5 ? 'Up late,' : hour < 12 ? 'Good morning,' : hour < 17 ? 'Good afternoon,' : hour < 21 ? 'Good evening,' : 'Good night,';
+        const firstName = (STATE.profile.name || 'there').trim().split(' ')[0];
+
         return `
-          <div class="who-strip"><b>${esc(STATE.profile.name || 'You')}</b><span class="dot"></span>${esc(branchName(STATE.profile.branch))}<span class="dot"></span>${BATCH_META[STATE.profile.batch].label}</div>
+          <div class="greeting">Hi ${esc(firstName)} 👋 <span class="greeting-dim">${greeting}</span></div>
+          <div class="who-strip">${esc(branchName(STATE.profile.branch))}<span class="dot"></span>${BATCH_META[STATE.profile.batch].label}</div>
           ${notificationsHtml}
           <div class="datenav">
             <button class="datenav-btn" data-action="date-prev">‹</button>
@@ -475,12 +480,19 @@ export default function App() {
             data-date="${dateStr}" data-classid="${cls.id}" data-subject="${esc(cls.subject)}" data-start="${cls.start}" data-end="${cls.end}">
             <span class="ic">${meta.ic}</span><span>${meta.label}</span>
           </button>`).join('');
+        const stats = subjectStats(cls.subject);
+        const attendanceNote = stats.T > 0 ? `
+          <div class="attend-note ${stats.adviceType}">
+            <b>${stats.pct.toFixed(0)}%</b> attendance in ${esc(cls.subject)} —
+            ${stats.adviceType === 'good' ? "you're in good shape, this one's skippable if you need to." : "this one matters, try not to miss it."}
+          </div>` : '';
         return `
           <div class="class-card" style="border-left-color:${borderColor}">
             <div class="class-top">
               <div><div class="class-subject">${esc(cls.subject)}</div><div class="class-time">${cls.start} – ${cls.end}</div></div>
               ${status ? `<div class="status-chip" style="background:${STATUS_META[status].color}22;color:${STATUS_META[status].color}">${STATUS_META[status].label}</div>` : ''}
             </div>
+            ${attendanceNote}
             <div class="status-row">${btns}</div>
           </div>`;
       }
