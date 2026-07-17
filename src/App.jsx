@@ -343,6 +343,7 @@ export default function App() {
 
       function renderAppShell() {
         const soon = STATE.profile && STATE.profile.branch ? (getNotifications()[0]?.days ?? 99) <= 3 : false;
+        const bellIcon = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>`;
         return `
           <div class="app with-nav" id="app">
             <div class="topbar">
@@ -360,7 +361,7 @@ export default function App() {
               <button class="nav-btn" data-action="nav-tab" data-tab="calendar"><span class="ic">▦</span><span class="lb">Calendar</span></button>
               <button class="nav-btn" data-action="nav-tab" data-tab="subjects"><span class="ic">▤</span><span class="lb">Subjects</span></button>
               <button class="nav-btn" data-action="nav-tab" data-tab="setup"><span class="ic">⚙</span><span class="lb">Timetable</span></button>
-              <button class="nav-btn" data-action="nav-tab" data-tab="notifications"><span class="ic">🔔${soon ? '<span class="nav-dot"></span>' : ''}</span><span class="lb">Alerts</span></button>
+              <button class="nav-btn" data-action="nav-tab" data-tab="notifications"><span class="ic">${bellIcon}${soon ? '<span class="nav-dot"></span>' : ''}</span><span class="lb">Alerts</span></button>
               <button class="nav-btn" data-action="nav-tab" data-tab="assignments"><span class="ic">✎</span><span class="lb">Tasks</span></button>
               <button class="nav-btn" data-action="nav-tab" data-tab="profile"><span class="ic">◍</span><span class="lb">Profile</span></button>
             </div>
