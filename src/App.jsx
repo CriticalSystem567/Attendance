@@ -321,10 +321,7 @@ export default function App() {
 
       function subjectMarks(subject) {
         const entries = (STATE.internalMarks[subject] || []).slice().sort((a, b) => a.test.localeCompare(b.test));
-        const totObtained = entries.reduce((s, e) => s + e.obtained, 0);
-        const totOutOf = entries.reduce((s, e) => s + e.total, 0);
-        const pct = totOutOf > 0 ? (totObtained / totOutOf * 100) : null;
-        return { entries, pct };
+        return { entries };
       }
 
       function subjectStats(subject) {
@@ -683,21 +680,24 @@ export default function App() {
       }
 
       function renderMarksSection(subject) {
-        const { entries, pct } = subjectMarks(subject);
+        const { entries } = subjectMarks(subject);
         const rows = entries.map(e => `
           <div class="log-row">
             <span class="ld">${esc(e.test)}</span>
-            <span>${e.obtained} / ${e.total}</span>
-            <span style="font-weight:600;">${(e.obtained / e.total * 100).toFixed(1)}%</span>
+            <span>${e.obtained} / ${e.total} marks</span>
+            <span style="font-weight:600;">${e.weightage != null ? `${e.weightage}% of final` : '—'}</span>
             <button class="icon-btn" data-action="delete-mark" data-subject="${esc(subject)}" data-id="${e.id}" style="margin-left:6px;">✕</button>
           </div>`).join('') || `<div style="font-size:12px;color:var(--text-dim2);">No marks entered yet.</div>`;
         return `
-          <div class="section-label" style="margin-top:14px;margin-bottom:6px;font-size:11.5px;">Internal marks${pct !== null ? ` · ${pct.toFixed(1)}% overall` : ''}</div>
+          <div class="section-label" style="margin-top:14px;margin-bottom:6px;font-size:11.5px;">Internal marks</div>
           <div class="subj-log">${rows}</div>
           <div class="row2" style="margin-top:8px;gap:6px;">
             <input type="text" id="mkTest-${cssSafe(subject)}" placeholder="Test name (e.g. CT-1)" style="flex:1.4;">
             <input type="text" inputmode="numeric" id="mkObtained-${cssSafe(subject)}" placeholder="Got" style="flex:1;">
             <input type="text" inputmode="numeric" id="mkTotal-${cssSafe(subject)}" placeholder="Out of" style="flex:1;">
+          </div>
+          <div class="field" style="margin-top:6px;margin-bottom:0;">
+            <input type="text" inputmode="numeric" id="mkWeightage-${cssSafe(subject)}" placeholder="% this test counts toward the final sem exam (optional)">
           </div>
           <button class="btn secondary full" style="margin-top:6px;" data-action="add-mark" data-subject="${esc(subject)}">+ Add mark</button>
         `;
@@ -748,37 +748,13 @@ export default function App() {
             </div>`;
         }).join('');
         return `
-          <div class="row2" style="margin-bottom:16px;">
-            <button class="btn secondary full" data-action="download-report">⬇ PDF report</button>
-            <button class="btn secondary full" data-action="download-raw-data">⬇ Raw data (JSON)</button>
-          </div>
+          <button class="btn secondary full" style="margin-bottom:16px;" data-action="download-report">⬇ Download attendance report (PDF)</button>
         ` + overallHtml + `<div class="section-label">Subjects</div>` + cards;
       }
 
       function hexRgb(hex) {
         const n = parseInt(hex.slice(1), 16);
         return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
-      }
-
-      function downloadRawData() {
-        const payload = {
-          exportedAt: new Date().toISOString(),
-          profile: STATE.profile,
-          className: branchName(STATE.profile.branch),
-          batch: BATCH_META[STATE.profile.batch]?.label,
-          attendance: STATE.attendance,
-          internalMarks: STATE.internalMarks,
-          assignmentStatus: STATE.assignmentStatus
-        };
-        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `attendance-data-${todayStr()}.json`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
       }
 
       async function downloadAttendanceReport() {
@@ -807,7 +783,7 @@ export default function App() {
         y += 26;
 
         // Overall summary card
-        const cardH = 74;
+        const cardH = 92;
         doc.setFillColor(247, 248, 252);
         doc.setDrawColor(228, 230, 240);
         doc.roundedRect(margin, y, pageW - margin * 2, cardH, 8, 8, 'FD');
@@ -817,20 +793,24 @@ export default function App() {
         doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(110, 115, 132);
         doc.text('Overall attendance', margin + 18, y + 60);
 
+        // Legend wraps 3-per-row so it never runs past the card/page edge.
         const legend = [
           ['Present', totP, '#3ecf8e'], ['Absent', totA, '#f0546a'], ['OD', totO, '#f5b942'],
           ['Cancelled', totC, '#8b93a6'], ['Faculty absent', totFA, '#7c83fd']
         ];
-        let lx = margin + 165;
-        legend.forEach(([label, count, color]) => {
+        const legendX = margin + 165;
+        const legendColW = (pageW - margin - legendX) / 3;
+        legend.forEach(([label, count, color], i) => {
+          const col = i % 3, row = Math.floor(i / 3);
+          const cx = legendX + col * legendColW;
+          const cy = y + 22 + row * 18;
           doc.setFillColor(...hexRgb(color));
-          doc.circle(lx, y + 24, 3.2, 'F');
+          doc.circle(cx, cy, 3.2, 'F');
           doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(70, 75, 92);
-          doc.text(`${label}: ${count}`, lx + 8, y + 27);
-          lx += 95;
+          doc.text(`${label}: ${count}`, cx + 8, cy + 3, { maxWidth: legendColW - 12 });
         });
         doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(70, 75, 92);
-        doc.text(`Total classes marked: ${totT}  ·  Minimum required: 80%`, margin + 165, y + 52);
+        doc.text(`Total classes marked: ${totT}  ·  Minimum required: 80%`, legendX, y + 76);
         y += cardH + 30;
 
         // Per-subject chart
@@ -865,6 +845,34 @@ export default function App() {
           }
           y += 4;
         });
+
+        // Internal marks — shown as raw marks (not a percentage), with how
+        // much each test counts toward the final semester exam, if given.
+        const marksSubjects = subs.filter(s => (STATE.internalMarks[s] || []).length);
+        if (marksSubjects.length) {
+          y += 10;
+          if (y > pageH - 80) { doc.addPage(); y = 54; }
+          doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(20, 22, 30);
+          doc.text('Internal marks', margin, y);
+          y += 20;
+
+          marksSubjects.forEach(subj => {
+            const entries = subjectMarks(subj).entries;
+            if (y > pageH - 50) { doc.addPage(); y = 54; }
+            doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(35, 38, 48);
+            doc.text(subj, margin, y, { maxWidth: pageW - margin * 2 });
+            y += 16;
+            entries.forEach(e => {
+              if (y > pageH - 40) { doc.addPage(); y = 54; }
+              doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(70, 75, 92);
+              doc.text(e.test, margin + 14, y, { maxWidth: 200 });
+              doc.text(`${e.obtained} / ${e.total} marks`, margin + 230, y);
+              doc.text(e.weightage != null ? `${e.weightage}% of final exam` : 'Weightage not set', margin + 340, y);
+              y += 15;
+            });
+            y += 8;
+          });
+        }
 
         doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(160, 164, 178);
         doc.text('Generated by My Attendance Tracker', margin, pageH - 24);
@@ -1227,10 +1235,7 @@ export default function App() {
           <div class="section-label">Your data</div>
           <div class="card">
             <p class="hint" style="margin-top:0;">Your attendance and profile are private to your account, and are never deleted automatically — only you can remove them, below.</p>
-            <div class="row2" style="margin-bottom:10px;">
-              <button class="btn secondary full" data-action="download-report">⬇ PDF report</button>
-              <button class="btn secondary full" data-action="download-raw-data">⬇ Raw data (JSON)</button>
-            </div>
+            <button class="btn secondary full" style="margin-bottom:10px;" data-action="download-report">⬇ Download attendance report (PDF)</button>
             <button class="btn danger full" data-action="clear-attendance" style="margin-bottom:8px;">Clear my attendance history</button>
             <button class="btn danger full" data-action="delete-my-data">Delete all my data</button>
           </div>
@@ -1431,11 +1436,14 @@ export default function App() {
           const test = (document.getElementById(`mkTest-${safe}`) || {}).value?.trim();
           const obtained = Number((document.getElementById(`mkObtained-${safe}`) || {}).value);
           const total = Number((document.getElementById(`mkTotal-${safe}`) || {}).value);
+          const weightageRaw = (document.getElementById(`mkWeightage-${safe}`) || {}).value?.trim();
+          const weightage = weightageRaw ? Number(weightageRaw) : null;
           if (!test) { toast('Give the test a name'); return; }
           if (!total || total <= 0) { toast("Enter what it's out of"); return; }
           if (obtained < 0 || obtained > total) { toast('Marks obtained should be between 0 and the total'); return; }
+          if (weightage !== null && (isNaN(weightage) || weightage < 0 || weightage > 100)) { toast('Weightage should be a % between 0 and 100'); return; }
           if (!STATE.internalMarks[subject]) STATE.internalMarks[subject] = [];
-          STATE.internalMarks[subject].push({ id: uid(), test, obtained, total });
+          STATE.internalMarks[subject].push({ id: uid(), test, obtained, total, weightage });
           await storageSet('internalMarks', STATE.internalMarks, false);
           toast('Mark added');
           render();
@@ -1588,9 +1596,6 @@ export default function App() {
         }
         else if (action === 'download-report') {
           await downloadAttendanceReport();
-        }
-        else if (action === 'download-raw-data') {
-          downloadRawData();
         }
         else if (action === 'delete-my-data') {
           const typed = prompt('This permanently deletes your profile, attendance history, internal marks, assignment status, and saved logins — and cannot be undone.\n\nType DELETE to confirm:');
