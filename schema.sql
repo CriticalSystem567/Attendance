@@ -70,3 +70,45 @@ create policy "own insert" on user_data
 
 create policy "own update" on user_data
   for update using (auth.uid() = user_id);
+
+-- Needed for the "Delete all my data" feature — without this, RLS
+-- silently blocks every delete and the button does nothing.
+create policy "own delete" on user_data
+  for delete using (auth.uid() = user_id);
+
+-- Username -> real email lookup.
+--
+-- Supabase Auth is fundamentally email/password; this app only ever
+-- shows a "username" though, and originally faked an email as
+-- "username@dayorder.local" so login could work off just a username.
+-- That trick means Supabase's native password-reset email has nowhere
+-- real to send to. This table maps each username to the person's real
+-- email (collected at signup) so:
+--   - signIn(username) can look up the real email and sign in with it
+--   - "forgot password" can look up the real email and send a genuine
+--     Supabase reset email to it
+-- Accounts created before this table existed won't have a row here —
+-- the app falls back to the old synthetic-email login for them until
+-- they add a recovery email from Profile.
+create table if not exists usernames (
+  username   text primary key,
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  email      text not null,
+  created_at timestamptz not null default now()
+);
+
+alter table usernames enable row level security;
+
+-- Needs to be publicly readable: looking up the email for a username
+-- has to work *before* the person is signed in (that's the whole point
+-- of login/forgot-password). Matches this app's existing permissive
+-- model (shared_data is public read/write too) rather than adding real
+-- auth infrastructure for a small class-group tool.
+create policy "public read" on usernames
+  for select using (true);
+
+create policy "public insert" on usernames
+  for insert with check (true);
+
+create policy "own update" on usernames
+  for update using (auth.uid() = user_id);

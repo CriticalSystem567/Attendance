@@ -1,6 +1,9 @@
 import { useEffect, useRef } from "react";
 import { storageGet, storageSet, storageDelete } from "./storage.js";
-import { signUp, signIn, signOut, getSession, onAuthStateChange, isValidUsername, sessionUsername } from "./auth.js";
+import {
+  signUp, signIn, signOut, getSession, onAuthStateChange, isValidUsername, isValidEmail, sessionUsername,
+  requestPasswordReset, updatePassword, addRecoveryEmail, finalizeRecoveryEmail
+} from "./auth.js";
 import { dayKind, holidayName } from "./holidays.js";
 import { PRESETS, buildPresetTimetable, buildPresetOverrides } from "./presets.js";
 import { APP_VERSION } from "./version.js";
@@ -50,6 +53,7 @@ export default function App() {
         bootError: null,
         authMode: 'login',
         authError: '',
+        authNotice: '',
         authBusy: false,
         branches: [],
         profile: null,
@@ -61,16 +65,13 @@ export default function App() {
         birthdays: {},
         members: {},
         savedLogins: [],
-        pendingRememberLogin: null,
         canInstall: false,
         assignments: [],
         assignmentStatus: {},
         attendance: {},
-        internalMarks: {},
         tab: 'today',
         viewDate: todayStr(),
         setupDoTab: '1',
-        cancelHolidayFor: null,
         creatingBranch: false,
         newBranchDraft: '',
         calMode: 'year',
@@ -202,12 +203,8 @@ export default function App() {
         // 'exam' overrides are a note, not a day-type override: CTs don't
         // cancel classes, they just happen before the day's normal classes
         // resume, so day-order keeps advancing normally through them.
-        // 'workday' overrides mean "a holiday got cancelled — treat this as
-        // a normal working day and keep the cycle going", so they also fall
-        // through to the normal computation below instead of being returned
-        // directly like 'dayorder' (forced value) or 'holiday' (forced off).
         const directOv = cfg.overrides[dateStr];
-        if (directOv && (directOv.type === 'dayorder' || directOv.type === 'holiday')) return directOv;
+        if (directOv && directOv.type !== 'exam') return directOv;
         const target = parseDate(dateStr);
         const start = parseDate(cfg.startDate);
         if (target < start) return { type: 'before_start' };
@@ -217,9 +214,7 @@ export default function App() {
           cur.setDate(cur.getDate() + 1);
           const cds = fmt(cur);
           const ov = cfg.overrides[cds];
-          if (ov && ov.type === 'dayorder') { currentDO = ov.value; }
-          else if (ov && ov.type === 'holiday') { /* off day — cycle doesn't advance */ }
-          else if (ov && ov.type === 'workday') { currentDO = (currentDO % 5) + 1; }
+          if (ov && ov.type !== 'exam') { if (ov.type === 'dayorder') currentDO = ov.value; }
           else if (!cfg.skipDays.includes(cur.getDay()) && !holidayName(cds)) { currentDO = (currentDO % 5) + 1; }
         }
         if (!directOv) {
@@ -326,11 +321,6 @@ export default function App() {
         render();
       }
 
-      function subjectMarks(subject) {
-        const entries = (STATE.internalMarks[subject] || []).slice().sort((a, b) => a.test.localeCompare(b.test));
-        return { entries };
-      }
-
       function subjectStats(subject) {
         const entries = Object.values(STATE.attendance).filter(e => e.subject === subject);
         const counts = { present: 0, absent: 0, cancelled: 0, faculty_absent: 0, od: 0 };
@@ -370,6 +360,11 @@ export default function App() {
       /* ================= RENDER ================= */
       function render() {
         const root = document.getElementById('root-shell');
+
+        if (STATE.authMode === 'reset') {
+          root.innerHTML = renderAuthShell();
+          return;
+        }
 
         if (!STATE.session) {
           root.innerHTML = renderAuthShell();
@@ -417,9 +412,7 @@ export default function App() {
       }
 
       function renderAppShell() {
-        // Red dot on the bell should only light up on the actual day of the
-        // nearest event (days === 0) — not for several days beforehand.
-        const soon = STATE.profile && STATE.profile.branch ? (getNotifications()[0]?.days ?? 99) === 0 : false;
+        const soon = STATE.profile && STATE.profile.branch ? (getNotifications()[0]?.days ?? 99) <= 3 : false;
         const bellIcon = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>`;
         return `
           <div class="app with-nav" id="app">
@@ -448,6 +441,34 @@ export default function App() {
       }
 
       function renderAuthShell() {
+        if (STATE.authMode === 'forgot') {
+          return `
+            <div class="onboard-wrap">
+              <div class="onboard-logo"><img src="${logoUrl}" alt="" /></div>
+              <h1 class="onboard-title">Reset your password</h1>
+              <p class="onboard-sub">Enter your username — if your account has a recovery email on file, we'll send a reset link to it.</p>
+              <div class="field"><label>Username</label><input type="text" id="authUsername" placeholder="e.g. yogeswar_k" autocapitalize="off" autocorrect="off" spellcheck="false"></div>
+              ${STATE.authError ? `<div class="note-box" style="border-color:var(--absent);color:var(--absent);">${esc(STATE.authError)}</div>` : ''}
+              ${STATE.authNotice ? `<div class="note-box" style="border-color:var(--present);color:var(--present);">${esc(STATE.authNotice)}</div>` : ''}
+              <button class="btn full" style="margin-top:14px;" data-action="do-forgot-password" ${STATE.authBusy ? 'disabled' : ''}>${STATE.authBusy ? 'Please wait…' : 'Send reset email'}</button>
+              <button class="btn secondary full" style="margin-top:10px;" data-action="back-to-login">Back to log in</button>
+              <div class="version-tag">v${APP_VERSION}</div>
+            </div>`;
+        }
+
+        if (STATE.authMode === 'reset') {
+          return `
+            <div class="onboard-wrap">
+              <div class="onboard-logo"><img src="${logoUrl}" alt="" /></div>
+              <h1 class="onboard-title">Set a new password</h1>
+              <p class="onboard-sub">You clicked a reset link — choose a new password for your account.</p>
+              <div class="field"><label>New password</label><input type="text" id="authPassword" placeholder="At least 6 characters" style="-webkit-text-security:disc;"></div>
+              ${STATE.authError ? `<div class="note-box" style="border-color:var(--absent);color:var(--absent);">${esc(STATE.authError)}</div>` : ''}
+              <button class="btn full" style="margin-top:14px;" data-action="do-reset-password" ${STATE.authBusy ? 'disabled' : ''}>${STATE.authBusy ? 'Please wait…' : 'Save new password'}</button>
+              <div class="version-tag">v${APP_VERSION}</div>
+            </div>`;
+        }
+
         const isLogin = STATE.authMode === 'login';
         return `
           <div class="onboard-wrap">
@@ -456,18 +477,14 @@ export default function App() {
             <p class="onboard-sub">${isLogin ? 'Log in to see your classes, attendance and assignments.' : 'Create an account to get started — your data follows you across devices.'}</p>
 
             <div class="field"><label>Username</label><input type="text" id="authUsername" placeholder="e.g. yogeswar_k" autocapitalize="off" autocorrect="off" spellcheck="false"></div>
+            ${!isLogin ? `<div class="field"><label>Email <span style="font-weight:400;color:var(--text-dim2);">(for password recovery only — never shown to classmates)</span></label><input type="email" id="authEmail" placeholder="you@example.com" autocapitalize="off" autocorrect="off" spellcheck="false"></div>` : ''}
             <div class="field"><label>Password</label><input type="text" id="authPassword" placeholder="At least 6 characters" style="-webkit-text-security:disc;"></div>
-            ${isLogin ? `
-              <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-dim);margin-top:2px;">
-                <input type="checkbox" id="authRemember" style="width:auto;">
-                Remember this login (saves it to Saved logins in Profile)
-              </label>
-            ` : ''}
             ${STATE.authError ? `<div class="note-box" style="border-color:var(--absent);color:var(--absent);">${esc(STATE.authError)}</div>` : ''}
 
             <button class="btn full" style="margin-top:14px;" data-action="${isLogin ? 'do-login' : 'do-signup'}" ${STATE.authBusy ? 'disabled' : ''}>
               ${STATE.authBusy ? 'Please wait…' : (isLogin ? 'Log in' : 'Sign up')}
             </button>
+            ${isLogin ? `<button class="btn secondary full" style="margin-top:10px;" data-action="toggle-forgot-mode">Forgot password?</button>` : ''}
             <button class="btn secondary full" style="margin-top:10px;" data-action="toggle-auth-mode">
               ${isLogin ? "New here? Create an account" : 'Already have an account? Log in'}
             </button>
@@ -512,28 +529,11 @@ export default function App() {
           const classes = getClassesForDO(doInfo.value);
           const marked = classes.filter(c => getStatus(d, c.id)).length;
           const ctNote = doInfo.examNote ? `<div class="ct-note">📝 ${esc(doInfo.examNote)} today — classes run as usual afterwards.</div>` : '';
-          metaHtml = `<div class="ring-meta"><div class="ring-meta-title">Day Order ${doInfo.value}</div><div class="ring-meta-sub">${classes.length} class${classes.length !== 1 ? 'es' : ''} scheduled${classes.length ? ` · ${marked}/${classes.length} marked` : ''}</div>${ctNote}<button class="btn secondary" style="margin-top:10px;" data-action="mark-day-holiday" data-date="${d}">Mark this day as a holiday</button></div>`;
+          metaHtml = `<div class="ring-meta"><div class="ring-meta-title">Day Order ${doInfo.value}</div><div class="ring-meta-sub">${classes.length} class${classes.length !== 1 ? 'es' : ''} scheduled${classes.length ? ` · ${marked}/${classes.length} marked` : ''}</div>${ctNote}</div>`;
           classesHtml = classes.length ? classes.map(c => renderClassCard(d, c)).join('') : `<div class="card empty" style="padding:26px;"><p style="margin:0;">No classes added for Day Order ${doInfo.value} yet.</p></div>`;
         } else if (doInfo.type === 'holiday') {
-          let cancelHtml;
-          if (!doInfo.auto) {
-            cancelHtml = `<button class="btn secondary" style="margin-top:10px;" data-action="unmark-day-holiday" data-date="${d}">Undo — restore this day's order</button>`;
-          } else if (STATE.cancelHolidayFor === d) {
-            cancelHtml = `
-              <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
-                <p class="hint" style="margin:0 0 8px;">Holiday cancelled — should this day continue the normal cycle, or use a specific Day Order?</p>
-                <button class="btn secondary full" style="margin-bottom:8px;" data-action="cancel-holiday-continue" data-date="${d}">Continue the normal cycle</button>
-                <div class="row2" style="margin-bottom:8px;">
-                  <select id="cancelHolidayDO">${[1, 2, 3, 4, 5].map(n => `<option value="${n}">Day Order ${n}</option>`).join('')}</select>
-                  <button class="btn secondary" data-action="cancel-holiday-setdo" data-date="${d}">Use this Day Order</button>
-                </div>
-                <button class="btn secondary full" data-action="cancel-holiday-abort">Never mind</button>
-              </div>`;
-          } else {
-            cancelHtml = `<button class="btn secondary" style="margin-top:10px;" data-action="open-cancel-holiday" data-date="${d}">Holiday cancelled? Mark as working day</button>`;
-          }
           ringHtml = `<div class="do-ring" style="background:var(--holiday-dim)"><div class="do-ring-inner"><div class="do-ring-num" style="font-size:20px;color:var(--holiday);">Off</div></div></div>`;
-          metaHtml = `<div class="ring-meta"><div class="ring-meta-title" style="color:var(--holiday);">Holiday</div><div class="ring-meta-sub">${doInfo.reason ? esc(doInfo.reason) : (doInfo.auto ? 'Weekly off' : 'Marked as holiday')} — no classes today.</div>${cancelHtml}</div>`;
+          metaHtml = `<div class="ring-meta"><div class="ring-meta-title" style="color:var(--holiday);">Holiday</div><div class="ring-meta-sub">${doInfo.reason ? esc(doInfo.reason) : (doInfo.auto ? 'Weekly off' : 'Marked as holiday')} — no classes today.</div></div>`;
           classesHtml = '';
         } else {
           ringHtml = `<div class="do-ring" style="background:rgba(255,255,255,0.08)"><div class="do-ring-inner"><div class="do-ring-num" style="font-size:16px;">—</div></div></div>`;
@@ -702,30 +702,6 @@ export default function App() {
         return STATE.calMode === 'month' ? renderCalendarMonth() : renderCalendarYear();
       }
 
-      function renderMarksSection(subject) {
-        const { entries } = subjectMarks(subject);
-        const rows = entries.map(e => `
-          <div class="log-row">
-            <span class="ld">${esc(e.test)}</span>
-            <span>${e.obtained} / ${e.total} marks</span>
-            <span style="font-weight:600;">${e.weightage != null ? `${e.weightage}% of final` : '—'}</span>
-            <button class="icon-btn" data-action="delete-mark" data-subject="${esc(subject)}" data-id="${e.id}" style="margin-left:6px;">✕</button>
-          </div>`).join('') || `<div style="font-size:12px;color:var(--text-dim2);">No marks entered yet.</div>`;
-        return `
-          <div class="section-label" style="margin-top:14px;margin-bottom:6px;font-size:11.5px;">Internal marks</div>
-          <div class="subj-log">${rows}</div>
-          <div class="row2" style="margin-top:8px;gap:6px;">
-            <input type="text" id="mkTest-${cssSafe(subject)}" placeholder="Test name (e.g. CT-1)" style="flex:1.4;">
-            <input type="text" inputmode="numeric" id="mkObtained-${cssSafe(subject)}" placeholder="Got" style="flex:1;">
-            <input type="text" inputmode="numeric" id="mkTotal-${cssSafe(subject)}" placeholder="Out of" style="flex:1;">
-          </div>
-          <div class="field" style="margin-top:6px;margin-bottom:0;">
-            <input type="text" inputmode="numeric" id="mkWeightage-${cssSafe(subject)}" placeholder="% this test counts toward the final sem exam (optional)">
-          </div>
-          <button class="btn secondary full" style="margin-top:6px;" data-action="add-mark" data-subject="${esc(subject)}">+ Add mark</button>
-        `;
-      }
-
       function renderSubjects() {
         if (!STATE.profile.branch) {
           return `<div class="card empty"><div class="ic">▤</div><h3>No class set up yet</h3><p>Pick or create a class in Profile first.</p><button class="btn" data-action="nav-tab" data-tab="profile">Go to Profile</button></div>`;
@@ -767,17 +743,39 @@ export default function App() {
               </div>
               ${st.advice ? `<div class="subj-advice" style="background:${adviceBg};color:${adviceColor}">${st.advice}</div>` : ''}
               <div class="subj-log" id="log-${cssSafe(s)}">${log}</div>
-              ${renderMarksSection(s)}
             </div>`;
         }).join('');
         return `
-          <button class="btn secondary full" style="margin-bottom:16px;" data-action="download-report">⬇ Download attendance report (PDF)</button>
+          <div class="row2" style="margin-bottom:16px;">
+            <button class="btn secondary full" data-action="download-report">⬇ PDF report</button>
+            <button class="btn secondary full" data-action="download-raw-data">⬇ Raw data (JSON)</button>
+          </div>
         ` + overallHtml + `<div class="section-label">Subjects</div>` + cards;
       }
 
       function hexRgb(hex) {
         const n = parseInt(hex.slice(1), 16);
         return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+      }
+
+      function downloadRawData() {
+        const payload = {
+          exportedAt: new Date().toISOString(),
+          profile: STATE.profile,
+          className: branchName(STATE.profile.branch),
+          batch: BATCH_META[STATE.profile.batch]?.label,
+          attendance: STATE.attendance,
+          assignmentStatus: STATE.assignmentStatus
+        };
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `attendance-data-${todayStr()}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
       }
 
       async function downloadAttendanceReport() {
@@ -806,7 +804,7 @@ export default function App() {
         y += 26;
 
         // Overall summary card
-        const cardH = 92;
+        const cardH = 74;
         doc.setFillColor(247, 248, 252);
         doc.setDrawColor(228, 230, 240);
         doc.roundedRect(margin, y, pageW - margin * 2, cardH, 8, 8, 'FD');
@@ -816,24 +814,20 @@ export default function App() {
         doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(110, 115, 132);
         doc.text('Overall attendance', margin + 18, y + 60);
 
-        // Legend wraps 3-per-row so it never runs past the card/page edge.
         const legend = [
           ['Present', totP, '#3ecf8e'], ['Absent', totA, '#f0546a'], ['OD', totO, '#f5b942'],
           ['Cancelled', totC, '#8b93a6'], ['Faculty absent', totFA, '#7c83fd']
         ];
-        const legendX = margin + 165;
-        const legendColW = (pageW - margin - legendX) / 3;
-        legend.forEach(([label, count, color], i) => {
-          const col = i % 3, row = Math.floor(i / 3);
-          const cx = legendX + col * legendColW;
-          const cy = y + 22 + row * 18;
+        let lx = margin + 165;
+        legend.forEach(([label, count, color]) => {
           doc.setFillColor(...hexRgb(color));
-          doc.circle(cx, cy, 3.2, 'F');
+          doc.circle(lx, y + 24, 3.2, 'F');
           doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(70, 75, 92);
-          doc.text(`${label}: ${count}`, cx + 8, cy + 3, { maxWidth: legendColW - 12 });
+          doc.text(`${label}: ${count}`, lx + 8, y + 27);
+          lx += 95;
         });
         doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(70, 75, 92);
-        doc.text(`Total classes marked: ${totT}  ·  Minimum required: 80%`, legendX, y + 76);
+        doc.text(`Total classes marked: ${totT}  ·  Minimum required: 80%`, margin + 165, y + 52);
         y += cardH + 30;
 
         // Per-subject chart
@@ -869,34 +863,6 @@ export default function App() {
           y += 4;
         });
 
-        // Internal marks — shown as raw marks (not a percentage), with how
-        // much each test counts toward the final semester exam, if given.
-        const marksSubjects = subs.filter(s => (STATE.internalMarks[s] || []).length);
-        if (marksSubjects.length) {
-          y += 10;
-          if (y > pageH - 80) { doc.addPage(); y = 54; }
-          doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(20, 22, 30);
-          doc.text('Internal marks', margin, y);
-          y += 20;
-
-          marksSubjects.forEach(subj => {
-            const entries = subjectMarks(subj).entries;
-            if (y > pageH - 50) { doc.addPage(); y = 54; }
-            doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(35, 38, 48);
-            doc.text(subj, margin, y, { maxWidth: pageW - margin * 2 });
-            y += 16;
-            entries.forEach(e => {
-              if (y > pageH - 40) { doc.addPage(); y = 54; }
-              doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(70, 75, 92);
-              doc.text(e.test, margin + 14, y, { maxWidth: 200 });
-              doc.text(`${e.obtained} / ${e.total} marks`, margin + 230, y);
-              doc.text(e.weightage != null ? `${e.weightage}% of final exam` : 'Weightage not set', margin + 340, y);
-              y += 15;
-            });
-            y += 8;
-          });
-        }
-
         doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(160, 164, 178);
         doc.text('Generated by My Attendance Tracker', margin, pageH - 24);
 
@@ -913,7 +879,7 @@ export default function App() {
         const overridesSorted = Object.entries(cfg.overrides).sort((a, b) => a[0].localeCompare(b[0]));
         const overridesHtml = overridesSorted.length ? overridesSorted.map(([date, ov]) => `
           <div class="override-row">
-            <div><div style="font-weight:600;font-size:13px;">${date}</div><div style="font-size:11px;color:var(--text-dim);">${ov.type === 'dayorder' ? 'Forced Day Order ' + ov.value : ov.type === 'exam' ? (ov.value ? esc(ov.value) : 'CT day') : ov.type === 'workday' ? 'Holiday cancelled — working day' : 'Holiday'}</div></div>
+            <div><div style="font-weight:600;font-size:13px;">${date}</div><div style="font-size:11px;color:var(--text-dim);">${ov.type === 'dayorder' ? 'Forced Day Order ' + ov.value : ov.type === 'exam' ? (ov.value ? esc(ov.value) : 'CT day') : 'Holiday'}</div></div>
             <button class="icon-btn" data-action="delete-override" data-date="${date}">✕</button>
           </div>`).join('') : `<div style="font-size:12px;color:var(--text-dim2);padding:4px 0 2px;">No exceptions added yet.</div>`;
 
@@ -1016,7 +982,6 @@ export default function App() {
             <div class="field"><label>Type</label>
               <select id="ovType">
                 <option value="holiday">Holiday / long weekend</option>
-                <option value="workday">Holiday cancelled (working day, cycle continues)</option>
                 <option value="exam">CT day (classes resume after)</option>
                 <option value="dayorder">Force a specific Day Order</option>
               </select>
@@ -1178,12 +1143,23 @@ export default function App() {
           <div class="section-label">Install app</div>
           <button class="btn full" data-action="install-app">⬇ Install on this device</button>
         ` : '';
+        const currentEmail = STATE.session?.user?.email || '';
+        const hasRealEmail = currentEmail && !currentEmail.endsWith('@dayorder.local');
         return `
           ${installHtml}
           <div class="section-label">Account</div>
           <div class="card">
             <div class="field"><label>Signed in as</label><input type="text" value="${esc(username)}" disabled></div>
             <button class="btn danger full" data-action="logout">Log out</button>
+          </div>
+
+          <div class="section-label">Recovery email</div>
+          <div class="card">
+            ${hasRealEmail
+              ? `<p class="hint" style="margin-top:0;">Password reset emails go to <b>${esc(currentEmail)}</b>.</p>`
+              : `<p class="hint" style="margin-top:0;">Add a recovery email so you can reset your password if you forget it — without one, there's no way to recover this account.</p>`}
+            <div class="field"><label>${hasRealEmail ? 'Change email' : 'Email'}</label><input type="email" id="recoveryEmail" placeholder="you@example.com" autocapitalize="off" autocorrect="off" spellcheck="false"></div>
+            <button class="btn secondary full" data-action="save-recovery-email">${hasRealEmail ? 'Update email' : 'Add recovery email'}</button>
           </div>
 
           <div class="section-label">Your profile</div>
@@ -1259,7 +1235,10 @@ export default function App() {
           <div class="section-label">Your data</div>
           <div class="card">
             <p class="hint" style="margin-top:0;">Your attendance and profile are private to your account, and are never deleted automatically — only you can remove them, below.</p>
-            <button class="btn secondary full" style="margin-bottom:10px;" data-action="download-report">⬇ Download attendance report (PDF)</button>
+            <div class="row2" style="margin-bottom:10px;">
+              <button class="btn secondary full" data-action="download-report">⬇ PDF report</button>
+              <button class="btn secondary full" data-action="download-raw-data">⬇ Raw data (JSON)</button>
+            </div>
             <button class="btn danger full" data-action="clear-attendance" style="margin-bottom:8px;">Clear my attendance history</button>
             <button class="btn danger full" data-action="delete-my-data">Delete all my data</button>
           </div>
@@ -1279,21 +1258,48 @@ export default function App() {
         if (action === 'retry-boot') { await bootSession(); return; }
 
         /* --- auth actions --- */
-        if (action === 'toggle-auth-mode') { STATE.authMode = STATE.authMode === 'login' ? 'signup' : 'login'; STATE.authError = ''; render(); return; }
+        if (action === 'toggle-auth-mode') { STATE.authMode = STATE.authMode === 'login' ? 'signup' : 'login'; STATE.authError = ''; STATE.authNotice = ''; render(); return; }
+        if (action === 'toggle-forgot-mode') { STATE.authMode = 'forgot'; STATE.authError = ''; STATE.authNotice = ''; render(); return; }
+        if (action === 'back-to-login') { STATE.authMode = 'login'; STATE.authError = ''; STATE.authNotice = ''; render(); return; }
         if (action === 'do-login' || action === 'do-signup') {
           const username = (document.getElementById('authUsername') || {}).value?.trim();
+          const email = (document.getElementById('authEmail') || {}).value?.trim();
           const password = (document.getElementById('authPassword') || {}).value || '';
           if (!username || !password) { STATE.authError = 'Enter your username and password.'; render(); return; }
           if (!isValidUsername(username)) { STATE.authError = 'Username should be 3–20 letters, numbers, underscores or dots.'; render(); return; }
-          if (action === 'do-signup' && password.length < 6) { STATE.authError = 'Password should be at least 6 characters.'; render(); return; }
-          const remember = action === 'do-login' && (document.getElementById('authRemember') || {}).checked;
+          if (action === 'do-signup') {
+            if (!email || !isValidEmail(email)) { STATE.authError = 'Enter a valid email — it\'s only used if you ever need to reset your password.'; render(); return; }
+            if (password.length < 6) { STATE.authError = 'Password should be at least 6 characters.'; render(); return; }
+          }
           STATE.authBusy = true; STATE.authError = ''; render();
-          const { error } = action === 'do-login' ? await signIn(username, password) : await signUp(username, password);
+          const { error } = action === 'do-login' ? await signIn(username, password) : await signUp(username, email, password);
           STATE.authBusy = false;
           if (error) { STATE.authError = error.message; render(); return; }
           if (action === 'do-signup') { STATE.authError = 'Account created — log in with your new username.'; STATE.authMode = 'login'; render(); return; }
-          if (remember) STATE.pendingRememberLogin = { username, password };
           return; // successful login triggers onAuthStateChange -> boot()
+        }
+        if (action === 'do-forgot-password') {
+          const username = (document.getElementById('authUsername') || {}).value?.trim();
+          if (!username) { STATE.authError = 'Enter your username.'; render(); return; }
+          STATE.authBusy = true; STATE.authError = ''; STATE.authNotice = ''; render();
+          const { error } = await requestPasswordReset(username);
+          STATE.authBusy = false;
+          if (error) { STATE.authError = error.message; render(); return; }
+          STATE.authNotice = "If that account has a recovery email, we've sent a reset link to it. Check your inbox (and spam folder).";
+          render();
+          return;
+        }
+        if (action === 'do-reset-password') {
+          const password = (document.getElementById('authPassword') || {}).value || '';
+          if (password.length < 6) { STATE.authError = 'Password should be at least 6 characters.'; render(); return; }
+          STATE.authBusy = true; STATE.authError = ''; render();
+          const { error } = await updatePassword(password);
+          STATE.authBusy = false;
+          if (error) { STATE.authError = error.message; render(); return; }
+          toast('Password updated');
+          STATE.authMode = 'login';
+          await bootSession();
+          return;
         }
         if (action === 'logout') {
           await signOut();
@@ -1361,43 +1367,6 @@ export default function App() {
           ensurePersonal();
           delete STATE.config.overrides[el.dataset.date];
           await saveConfig();
-          render();
-        }
-        else if (action === 'mark-day-holiday') {
-          ensurePersonal();
-          const date = el.dataset.date;
-          STATE.config.overrides[date] = { type: 'holiday', value: null };
-          await saveConfig();
-          toast('Marked as holiday — day order shifted for the days after');
-          render();
-        }
-        else if (action === 'unmark-day-holiday') {
-          ensurePersonal();
-          const date = el.dataset.date;
-          delete STATE.config.overrides[date];
-          await saveConfig();
-          toast('Holiday removed — day order restored');
-          render();
-        }
-        else if (action === 'open-cancel-holiday') { STATE.cancelHolidayFor = el.dataset.date; render(); }
-        else if (action === 'cancel-holiday-abort') { STATE.cancelHolidayFor = null; render(); }
-        else if (action === 'cancel-holiday-continue') {
-          ensurePersonal();
-          const date = el.dataset.date;
-          STATE.config.overrides[date] = { type: 'workday', value: null };
-          STATE.cancelHolidayFor = null;
-          await saveConfig();
-          toast('Marked as a working day — cycle continues normally');
-          render();
-        }
-        else if (action === 'cancel-holiday-setdo') {
-          ensurePersonal();
-          const date = el.dataset.date;
-          const value = Number(document.getElementById('cancelHolidayDO').value);
-          STATE.config.overrides[date] = { type: 'dayorder', value };
-          STATE.cancelHolidayFor = null;
-          await saveConfig();
-          toast('Day Order set for this day');
           render();
         }
         else if (action === 'set-do-tab') { STATE.setupDoTab = el.dataset.do; render(); }
@@ -1474,30 +1443,6 @@ export default function App() {
             toast('Attendance history cleared');
             render();
           }
-        }
-        else if (action === 'add-mark') {
-          const subject = el.dataset.subject;
-          const safe = cssSafe(subject);
-          const test = (document.getElementById(`mkTest-${safe}`) || {}).value?.trim();
-          const obtained = Number((document.getElementById(`mkObtained-${safe}`) || {}).value);
-          const total = Number((document.getElementById(`mkTotal-${safe}`) || {}).value);
-          const weightageRaw = (document.getElementById(`mkWeightage-${safe}`) || {}).value?.trim();
-          const weightage = weightageRaw ? Number(weightageRaw) : null;
-          if (!test) { toast('Give the test a name'); return; }
-          if (!total || total <= 0) { toast("Enter what it's out of"); return; }
-          if (obtained < 0 || obtained > total) { toast('Marks obtained should be between 0 and the total'); return; }
-          if (weightage !== null && (isNaN(weightage) || weightage < 0 || weightage > 100)) { toast('Weightage should be a % between 0 and 100'); return; }
-          if (!STATE.internalMarks[subject]) STATE.internalMarks[subject] = [];
-          STATE.internalMarks[subject].push({ id: uid(), test, obtained, total, weightage });
-          await storageSet('internalMarks', STATE.internalMarks, false);
-          toast('Mark added');
-          render();
-        }
-        else if (action === 'delete-mark') {
-          const subject = el.dataset.subject;
-          STATE.internalMarks[subject] = (STATE.internalMarks[subject] || []).filter(e => e.id !== el.dataset.id);
-          await storageSet('internalMarks', STATE.internalMarks, false);
-          render();
         }
         else if (action === 'start-create-branch') { STATE.creatingBranch = true; STATE.newBranchDraft = ''; render(); }
         else if (action === 'cancel-create-branch') { STATE.creatingBranch = false; render(); }
@@ -1642,16 +1587,18 @@ export default function App() {
         else if (action === 'download-report') {
           await downloadAttendanceReport();
         }
+        else if (action === 'download-raw-data') {
+          downloadRawData();
+        }
         else if (action === 'delete-my-data') {
-          const typed = prompt('This permanently deletes your profile, attendance history, internal marks, assignment status, and saved logins — and cannot be undone.\n\nType DELETE to confirm:');
+          const typed = prompt('This permanently deletes your profile, attendance history, assignment status, and saved logins — and cannot be undone.\n\nType DELETE to confirm:');
           if (typed !== 'DELETE') { toast('Nothing was deleted'); return; }
           const slug = STATE.profile.branch;
           const deletions = [
             storageDelete('profile', false),
             storageDelete('attendance', false),
             storageDelete('assignmentStatus', false),
-            storageDelete('savedLogins', false),
-            storageDelete('internalMarks', false)
+            storageDelete('savedLogins', false)
           ];
           if (slug) {
             deletions.push(
@@ -1664,6 +1611,13 @@ export default function App() {
           await Promise.all(deletions);
           toast('Your data has been deleted');
           await signOut();
+        }
+        else if (action === 'save-recovery-email') {
+          const email = (document.getElementById('recoveryEmail') || {}).value?.trim();
+          if (!email || !isValidEmail(email)) { toast('Enter a valid email'); return; }
+          const { error } = await addRecoveryEmail(email);
+          if (error) { toast(error.message || "Couldn't update email"); return; }
+          toast("Check your inbox to confirm — it'll take effect once confirmed");
         }
         else if (action === 'install-app') {
           if (!deferredInstallPrompt) return;
@@ -1715,33 +1669,19 @@ export default function App() {
 
       /* ---------- boot ---------- */
       async function loadEverythingForSession() {
-        const [profile, attendance, assignmentStatus, savedLogins, internalMarks] = await Promise.all([
+        const [profile, attendance, assignmentStatus, savedLogins] = await Promise.all([
           storageGet('profile', false),
           storageGet('attendance', false),
           storageGet('assignmentStatus', false),
-          storageGet('savedLogins', false),
-          storageGet('internalMarks', false)
+          storageGet('savedLogins', false)
         ]);
         // Safe to default to empty here: storageGet only resolves to null for
         // a genuinely-empty key, and throws (caught by the caller) on an
         // actual failure — so we never mistake "couldn't load" for "empty".
         STATE.profile = profile || { name: '', branch: null, batch: 'batch1' };
         STATE.attendance = attendance || {};
-        STATE.internalMarks = internalMarks || {};
         STATE.assignmentStatus = assignmentStatus || {};
         STATE.savedLogins = savedLogins || [];
-        if (STATE.pendingRememberLogin) {
-          const { username: ruser, password: rpass } = STATE.pendingRememberLogin;
-          STATE.pendingRememberLogin = null;
-          const already = STATE.savedLogins.some(l => l.username === ruser);
-          if (!already) {
-            STATE.savedLogins.push({ id: uid(), label: `Login — ${ruser}`, username: ruser, password: rpass });
-            storageSet('savedLogins', STATE.savedLogins, false).catch((err) => {
-              // eslint-disable-next-line no-console
-              console.warn('Failed to save remembered login:', err);
-            });
-          }
-        }
         await loadBranches();
         await loadBranchData(STATE.profile.branch);
         STATE.tab = 'today';
@@ -1790,10 +1730,10 @@ export default function App() {
       function resetLocalState() {
         STATE.profile = null; STATE.branches = []; STATE.config = null;
         STATE.common = null; STATE.batch1 = null; STATE.batch2 = null;
-        STATE.assignments = []; STATE.assignmentStatus = {}; STATE.attendance = {}; STATE.internalMarks = {};
+        STATE.assignments = []; STATE.assignmentStatus = {}; STATE.attendance = {};
         STATE.savedLogins = []; STATE.changeRequests = []; STATE.birthdays = {};
         STATE.bootError = null;
-        STATE.tab = 'today'; STATE.viewDate = todayStr(); STATE.creatingBranch = false; STATE.cancelHolidayFor = null;
+        STATE.tab = 'today'; STATE.viewDate = todayStr(); STATE.creatingBranch = false;
       }
 
       let deferredInstallPrompt = null;
@@ -1814,7 +1754,23 @@ export default function App() {
         if (session) await bootSession();
         else render();
 
-        onAuthStateChange(async (session) => {
+        onAuthStateChange(async (session, event) => {
+          if (event === 'PASSWORD_RECOVERY') {
+            // Supabase signs them into a temporary recovery session when
+            // they click the emailed reset link — don't boot the normal
+            // app on top of that, show the "set a new password" screen.
+            STATE.session = session;
+            STATE.authMode = 'reset';
+            STATE.authError = '';
+            render();
+            return;
+          }
+          if (event === 'USER_UPDATED' && STATE.session && STATE.profile) {
+            // Fires once they've confirmed a new/changed email address —
+            // register it so future logins and password resets use it.
+            const uname = sessionUsername(session);
+            if (uname) await finalizeRecoveryEmail(uname);
+          }
           const hadSession = !!STATE.session;
           STATE.session = session;
           if (session && !hadSession) {
