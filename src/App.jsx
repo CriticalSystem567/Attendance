@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { storageGet, storageSet } from "./storage.js";
+import { storageGet, storageSet, storageDelete } from "./storage.js";
 import { signUp, signIn, signOut, getSession, onAuthStateChange, isValidUsername, sessionUsername } from "./auth.js";
 import { dayKind, holidayName } from "./holidays.js";
 import { PRESETS, buildPresetTimetable, buildPresetOverrides } from "./presets.js";
@@ -47,6 +47,7 @@ export default function App() {
 
       let STATE = {
         session: null,
+        bootError: null,
         authMode: 'login',
         authError: '',
         authBusy: false,
@@ -58,7 +59,9 @@ export default function App() {
         hasPersonal: false,
         changeRequests: [],
         birthdays: {},
+        members: {},
         savedLogins: [],
+        canInstall: false,
         assignments: [],
         assignmentStatus: {},
         attendance: {},
@@ -75,18 +78,23 @@ export default function App() {
       const bk = slug => `branch__${slug}__`;
 
       function currentUid() { return STATE.session && STATE.session.user ? STATE.session.user.id : null; }
-      // A class has one admin (whoever created it, or whoever first claims
-      // it for older classes made before this existed). Only the admin's
-      // edits change the timetable for everyone; anyone else's edits are
-      // personal-only until the admin approves a "request".
+      // A class can have multiple admins (the creator, plus anyone they
+      // promote). Only an admin's edits change the timetable for everyone;
+      // anyone else's edits are personal-only until an admin approves a
+      // "request". `admins` is the source of truth; `createdBy` is kept
+      // around just to label who originally made the class.
+      function branchAdmins(b) {
+        if (!b) return [];
+        if (Array.isArray(b.admins) && b.admins.length) return b.admins;
+        return b.createdBy ? [b.createdBy] : [];
+      }
       function isAdmin() {
         const b = STATE.branches.find(x => x.slug === STATE.profile.branch);
-        if (!b || !b.createdBy) return false;
-        return b.createdBy === currentUid();
+        return branchAdmins(b).includes(currentUid());
       }
       function isUnclaimed() {
         const b = STATE.branches.find(x => x.slug === STATE.profile.branch);
-        return !!b && !b.createdBy;
+        return !!b && branchAdmins(b).length === 0;
       }
       // Non-admins start out pointing at the SAME in-memory object as the
       // shared data (no personal copy exists yet). Call this before any
@@ -108,10 +116,10 @@ export default function App() {
         if (!slug) {
           STATE.config = null; STATE.common = emptyDOMap(); STATE.batch1 = emptyDOMap(); STATE.batch2 = emptyDOMap(); STATE.assignments = [];
           STATE.sharedConfig = null; STATE.sharedCommon = null; STATE.sharedBatch1 = null; STATE.sharedBatch2 = null;
-          STATE.hasPersonal = false; STATE.changeRequests = []; STATE.birthdays = {};
+          STATE.hasPersonal = false; STATE.changeRequests = []; STATE.birthdays = {}; STATE.members = {};
           return;
         }
-        const [config, common, batch1, batch2, assignments, pConfig, pCommon, pBatch1, pBatch2, changeRequests, birthdays] = await Promise.all([
+        const [config, common, batch1, batch2, assignments, pConfig, pCommon, pBatch1, pBatch2, changeRequests, birthdays, members] = await Promise.all([
           storageGet(bk(slug) + 'config', true),
           storageGet(bk(slug) + 'common', true),
           storageGet(bk(slug) + 'batch1', true),
@@ -122,7 +130,8 @@ export default function App() {
           storageGet(bk(slug) + 'p_batch1', false),
           storageGet(bk(slug) + 'p_batch2', false),
           storageGet(bk(slug) + 'changeRequests', true),
-          storageGet(bk(slug) + 'birthdays', true)
+          storageGet(bk(slug) + 'birthdays', true),
+          storageGet(bk(slug) + 'members', true)
         ]);
         STATE.sharedConfig = config || { startDate: todayStr(), startDayOrder: 1, skipDays: [0, 6], overrides: {}, academicEvents: [] };
         if (!STATE.sharedConfig.academicEvents) STATE.sharedConfig.academicEvents = [];
@@ -138,6 +147,22 @@ export default function App() {
         STATE.assignments = assignments || [];
         STATE.changeRequests = changeRequests || [];
         STATE.birthdays = birthdays || {};
+        STATE.members = members || {};
+      }
+
+      // Records that the signed-in user is part of this class (so the admin
+      // can see who's in it and grant permissions). Never removes anyone —
+      // membership only goes away if the person explicitly deletes their data.
+      async function registerMembership(slug) {
+        const uidv = currentUid();
+        const uname = sessionUsername(STATE.session);
+        if (!uidv || !uname || !slug) return;
+        const members = (await storageGet(bk(slug) + 'members', true)) || {};
+        if (!members[uidv]) {
+          members[uidv] = { username: uname, joinedAt: todayStr() };
+          await storageSet(bk(slug) + 'members', members, true);
+        }
+        STATE.members = members;
       }
       // Admins write straight to the shared class data (everyone sees it).
       // Everyone else writes to a personal overlay only they see.
@@ -277,10 +302,18 @@ export default function App() {
       function getStatus(dateStr, classId) { const e = STATE.attendance[attKey(dateStr, classId)]; return e ? e.status : null; }
       async function markAttendance(dateStr, cls, status) {
         const key = attKey(dateStr, cls.id);
-        const existing = STATE.attendance[key];
-        if (existing && existing.status === status) { delete STATE.attendance[key]; }
+        const previous = STATE.attendance[key];
+        if (previous && previous.status === status) { delete STATE.attendance[key]; }
         else { STATE.attendance[key] = { status, subject: cls.subject, date: dateStr, classId: cls.id, start: cls.start, end: cls.end }; }
-        await storageSet('attendance', STATE.attendance, false);
+        try {
+          await storageSet('attendance', STATE.attendance, false);
+        } catch (err) {
+          // Save failed after retries — revert so the UI doesn't claim this
+          // is saved when it isn't. Better an honest "try again" than a mark
+          // that quietly never made it to the server.
+          if (previous) STATE.attendance[key] = previous; else delete STATE.attendance[key];
+          throw err;
+        }
         render();
       }
 
@@ -329,16 +362,44 @@ export default function App() {
           return;
         }
 
+        if (STATE.bootError) {
+          root.innerHTML = `
+            <div class="app" style="align-items:center;justify-content:center;text-align:center;padding:32px;">
+              <div style="font-size:34px;margin-bottom:12px;">⚠️</div>
+              <h3 style="margin:0 0 8px;">Couldn't load your data</h3>
+              <p style="color:var(--text-dim);font-size:13px;line-height:1.5;max-width:320px;margin:0 0 18px;">${esc(STATE.bootError)}</p>
+              <button class="btn" data-action="retry-boot">Try again</button>
+              <button class="btn secondary" style="margin-top:8px;" data-action="logout">Log out</button>
+            </div>`;
+          return;
+        }
+
         root.innerHTML = renderAppShell();
         document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === STATE.tab));
         const main = document.getElementById('main');
         if (STATE.tab === 'today') main.innerHTML = renderToday();
         else if (STATE.tab === 'calendar') main.innerHTML = renderCalendar();
         else if (STATE.tab === 'subjects') main.innerHTML = renderSubjects();
-        else if (STATE.tab === 'setup') main.innerHTML = renderSetup();
+        else if (STATE.tab === 'setup') { main.innerHTML = renderSetup(); renderInviteQr(); }
         else if (STATE.tab === 'assignments') main.innerHTML = renderAssignments();
         else if (STATE.tab === 'notifications') main.innerHTML = renderNotifications();
         else main.innerHTML = renderProfile();
+      }
+
+      // QR generation is async (dynamically imported), so it runs as a
+      // follow-up after the Setup screen's synchronous HTML is already in
+      // the DOM, filling in the <canvas> once it's ready.
+      async function renderInviteQr() {
+        const canvas = document.getElementById('inviteQrCanvas');
+        if (!canvas) return;
+        const link = canvas.dataset.link;
+        try {
+          const QRCode = (await import('qrcode')).default;
+          await QRCode.toCanvas(canvas, link, { width: 148, margin: 1, color: { dark: '#0a0a0a', light: '#ffffff' } });
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn('QR generation failed', err);
+        }
       }
 
       function renderAppShell() {
@@ -645,7 +706,128 @@ export default function App() {
               <div class="subj-log" id="log-${cssSafe(s)}">${log}</div>
             </div>`;
         }).join('');
-        return overallHtml + `<div class="section-label">Subjects</div>` + cards;
+        return `
+          <div class="row2" style="margin-bottom:16px;">
+            <button class="btn secondary full" data-action="download-report">⬇ PDF report</button>
+            <button class="btn secondary full" data-action="download-raw-data">⬇ Raw data (JSON)</button>
+          </div>
+        ` + overallHtml + `<div class="section-label">Subjects</div>` + cards;
+      }
+
+      function hexRgb(hex) {
+        const n = parseInt(hex.slice(1), 16);
+        return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+      }
+
+      function downloadRawData() {
+        const payload = {
+          exportedAt: new Date().toISOString(),
+          profile: STATE.profile,
+          className: branchName(STATE.profile.branch),
+          batch: BATCH_META[STATE.profile.batch]?.label,
+          attendance: STATE.attendance,
+          assignmentStatus: STATE.assignmentStatus
+        };
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `attendance-data-${todayStr()}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      }
+
+      async function downloadAttendanceReport() {
+        toast('Building your report…');
+        const { jsPDF } = await import('jspdf');
+        const subs = allSubjects();
+        const stats = subs.map(s => ({ name: s, ...subjectStats(s) }));
+        let totP = 0, totA = 0, totO = 0, totC = 0, totFA = 0, totT = 0;
+        stats.forEach(s => { totP += s.P; totA += s.A; totO += s.O; totC += s.counts.cancelled; totFA += s.counts.faculty_absent; totT += s.T; });
+        const overallPct = totT > 0 ? (totP / totT * 100) : null;
+
+        const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+        const pageW = doc.internal.pageSize.getWidth();
+        const pageH = doc.internal.pageSize.getHeight();
+        const margin = 42;
+        let y = 54;
+
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(19); doc.setTextColor(20, 22, 30);
+        doc.text('Attendance Report', margin, y);
+        y += 20;
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(10.5); doc.setTextColor(90, 96, 115);
+        const subLine = `${STATE.profile.name || 'Student'}  ·  ${branchName(STATE.profile.branch)}  ·  ${BATCH_META[STATE.profile.batch].label}`;
+        doc.text(subLine, margin, y);
+        y += 14;
+        doc.text(`Generated ${new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })} · as of ${todayStr()}`, margin, y);
+        y += 26;
+
+        // Overall summary card
+        const cardH = 74;
+        doc.setFillColor(247, 248, 252);
+        doc.setDrawColor(228, 230, 240);
+        doc.roundedRect(margin, y, pageW - margin * 2, cardH, 8, 8, 'FD');
+        const overallColor = overallPct === null ? [140, 145, 165] : overallPct >= 80 ? hexRgb('#3ecf8e') : hexRgb('#f0546a');
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(30); doc.setTextColor(...overallColor);
+        doc.text(overallPct === null ? '—' : `${overallPct.toFixed(1)}%`, margin + 18, y + 46);
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(110, 115, 132);
+        doc.text('Overall attendance', margin + 18, y + 60);
+
+        const legend = [
+          ['Present', totP, '#3ecf8e'], ['Absent', totA, '#f0546a'], ['OD', totO, '#f5b942'],
+          ['Cancelled', totC, '#8b93a6'], ['Faculty absent', totFA, '#7c83fd']
+        ];
+        let lx = margin + 165;
+        legend.forEach(([label, count, color]) => {
+          doc.setFillColor(...hexRgb(color));
+          doc.circle(lx, y + 24, 3.2, 'F');
+          doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(70, 75, 92);
+          doc.text(`${label}: ${count}`, lx + 8, y + 27);
+          lx += 95;
+        });
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(70, 75, 92);
+        doc.text(`Total classes marked: ${totT}  ·  Minimum required: 80%`, margin + 165, y + 52);
+        y += cardH + 30;
+
+        // Per-subject chart
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(20, 22, 30);
+        doc.text('Subject-wise breakdown', margin, y);
+        y += 20;
+
+        const barAreaX = margin + 172;
+        const barMaxW = pageW - margin - barAreaX - 92;
+        stats.forEach(s => {
+          if (y > pageH - 60) { doc.addPage(); y = 54; }
+          doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(35, 38, 48);
+          doc.text(s.name, margin, y + 4, { maxWidth: barAreaX - margin - 10 });
+
+          doc.setFillColor(234, 235, 242);
+          doc.roundedRect(barAreaX, y - 6, barMaxW, 11, 3, 3, 'F');
+          if (s.pct !== null) {
+            const w = Math.max(6, barMaxW * Math.min(s.pct, 100) / 100);
+            doc.setFillColor(...(s.pct >= 80 ? hexRgb('#3ecf8e') : hexRgb('#f0546a')));
+            doc.roundedRect(barAreaX, y - 6, w, 11, 3, 3, 'F');
+          }
+          doc.setFontSize(9); doc.setTextColor(70, 75, 92);
+          const pctTxt = s.pct === null ? '— ' : `${s.pct.toFixed(0)}% `;
+          doc.text(`${pctTxt}(${s.P}P/${s.A}A/${s.T}T)`, barAreaX + barMaxW + 8, y + 4);
+          y += 24;
+
+          if (s.advice) {
+            doc.setFont('helvetica', 'italic'); doc.setFontSize(8.5);
+            doc.setTextColor(...(s.adviceType === 'good' ? hexRgb('#1f9c68') : s.adviceType === 'bad' ? hexRgb('#c73754') : [130, 135, 150]));
+            doc.text(s.advice, margin, y, { maxWidth: pageW - margin * 2 });
+            y += 16;
+          }
+          y += 4;
+        });
+
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(160, 164, 178);
+        doc.text('Generated by My Attendance Tracker', margin, pageH - 24);
+
+        doc.save(`attendance-report-${todayStr()}.pdf`);
       }
 
       function renderSetup() {
@@ -707,9 +889,43 @@ export default function App() {
                ${STATE.hasPersonal ? `<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;"><button class="btn secondary" data-action="request-change">Request this for everyone</button><button class="btn secondary" data-action="discard-personal">Discard my changes</button></div>` : ''}
              </div>`;
 
+        const inviteLink = `${window.location.origin}${window.location.pathname}?join=${STATE.profile.branch}`;
+        const memberIds = Object.keys(STATE.members || {});
+        const admins = branchAdmins(STATE.branches.find(x => x.slug === STATE.profile.branch));
+        const inviteHtml = isAdmin() ? `
+          <div class="section-label">Invite &amp; permissions</div>
+          <div class="card">
+            <p class="hint" style="margin-top:0;">Share this link or QR code — anyone who opens it and signs in can join <b>${esc(branchName(STATE.profile.branch))}</b> and get its timetable. Joining is optional: they can decline and keep using the app on their own personal timetable instead.</p>
+            <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+              <canvas id="inviteQrCanvas" data-link="${esc(inviteLink)}" width="148" height="148" style="border-radius:10px;background:#fff;"></canvas>
+              <div style="flex:1;min-width:180px;">
+                <div class="hint" style="margin:0 0 8px;word-break:break-all;">${esc(inviteLink)}</div>
+                <button class="btn secondary" data-action="copy-invite-link" data-link="${esc(inviteLink)}">Copy link</button>
+              </div>
+            </div>
+            ${memberIds.length ? `
+              <div style="border-top:1px solid var(--border);padding-top:12px;">
+                <div class="hint" style="margin-top:0;">Members (${memberIds.length})</div>
+                ${memberIds.map(uidv => {
+                  const m = STATE.members[uidv];
+                  const isAdminHere = admins.includes(uidv);
+                  const isSelf = uidv === currentUid();
+                  return `<div class="override-row">
+                    <div><div style="font-weight:600;font-size:13px;">${esc(m.username)}${isSelf ? ' (you)' : ''}</div><div style="font-size:11px;color:var(--text-dim);">${isAdminHere ? 'Admin' : 'Member'} · joined ${m.joinedAt}</div></div>
+                    ${isAdminHere
+                      ? `<button class="btn secondary" data-action="revoke-admin" data-uid="${uidv}">Remove admin</button>`
+                      : `<button class="btn secondary" data-action="grant-admin" data-uid="${uidv}">Make admin</button>`}
+                  </div>`;
+                }).join('')}
+              </div>
+            ` : ''}
+          </div>
+        ` : '';
+
         return `
           ${permissionBanner}
           ${pendingRequestsHtml}
+          ${inviteHtml}
 
           <div class="section-label">Day Order calendar</div>
           <div class="card">
@@ -879,7 +1095,17 @@ export default function App() {
       function renderProfile() {
         const options = STATE.branches.map(b => `<option value="${b.slug}" ${STATE.profile.branch === b.slug ? 'selected' : ''}>${esc(b.name)}</option>`).join('');
         const username = sessionUsername(STATE.session);
+        const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream;
+        const isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+        const installHtml = isStandalone ? '' : isIOS ? `
+          <div class="section-label">Install app</div>
+          <div class="note-box" style="margin-bottom:0;">Tap the Share button <b>⬆︎</b> in Safari's toolbar, then choose <b>"Add to Home Screen"</b>.</div>
+        ` : STATE.canInstall ? `
+          <div class="section-label">Install app</div>
+          <button class="btn full" data-action="install-app">⬇ Install on this device</button>
+        ` : '';
         return `
+          ${installHtml}
           <div class="section-label">Account</div>
           <div class="card">
             <div class="field"><label>Signed in as</label><input type="text" value="${esc(username)}" disabled></div>
@@ -958,8 +1184,13 @@ export default function App() {
 
           <div class="section-label">Your data</div>
           <div class="card">
-            <p class="hint">Your attendance marks are private to your account. This clears just your marks, not the class timetable.</p>
-            <button class="btn danger full" data-action="clear-attendance">Clear my attendance history</button>
+            <p class="hint" style="margin-top:0;">Your attendance and profile are private to your account, and are never deleted automatically — only you can remove them, below.</p>
+            <div class="row2" style="margin-bottom:10px;">
+              <button class="btn secondary full" data-action="download-report">⬇ PDF report</button>
+              <button class="btn secondary full" data-action="download-raw-data">⬇ Raw data (JSON)</button>
+            </div>
+            <button class="btn danger full" data-action="clear-attendance" style="margin-bottom:8px;">Clear my attendance history</button>
+            <button class="btn danger full" data-action="delete-my-data">Delete all my data</button>
           </div>
 
           <div class="version-tag" style="text-align:center;margin-top:18px;">My Attendance Tracker · v${APP_VERSION}</div>
@@ -971,6 +1202,10 @@ export default function App() {
         const el = e.target.closest('[data-action]');
         if (!el) return;
         const action = el.dataset.action;
+
+        try {
+
+        if (action === 'retry-boot') { await bootSession(); return; }
 
         /* --- auth actions --- */
         if (action === 'toggle-auth-mode') { STATE.authMode = STATE.authMode === 'login' ? 'signup' : 'login'; STATE.authError = ''; render(); return; }
@@ -1111,6 +1346,7 @@ export default function App() {
           STATE.profile = { name, branch: branch || null, batch, birthday };
           await saveProfile();
           if (branchChanged) await loadBranchData(STATE.profile.branch);
+          if (STATE.profile.branch) await registerMembership(STATE.profile.branch);
           const uname = sessionUsername(STATE.session);
           if (uname && STATE.profile.branch) {
             const mmdd = birthday ? birthday.slice(5) : '';
@@ -1136,13 +1372,14 @@ export default function App() {
           if (!name) { toast('Give your class a name'); return; }
           const slug = slugify(name);
           if (!STATE.branches.find(b => b.slug === slug)) {
-            STATE.branches.push({ slug, name, createdBy: currentUid() });
+            STATE.branches.push({ slug, name, createdBy: currentUid(), admins: [currentUid()] });
             await saveBranches();
           }
           STATE.profile.branch = slug;
           STATE.creatingBranch = false;
           await loadBranchData(slug);
           await saveProfile();
+          await registerMembership(slug);
           toast('Class created');
           render();
         }
@@ -1150,7 +1387,7 @@ export default function App() {
           const preset = PRESETS.find(p => p.slug === el.dataset.slug);
           if (!preset) return;
           if (!STATE.branches.find(b => b.slug === preset.slug)) {
-            STATE.branches.push({ slug: preset.slug, name: preset.name, createdBy: currentUid() });
+            STATE.branches.push({ slug: preset.slug, name: preset.name, createdBy: currentUid(), admins: [currentUid()] });
             await saveBranches();
           }
           // Must set profile.branch BEFORE loading/saving, since loadBranchData,
@@ -1181,9 +1418,39 @@ export default function App() {
           }
           STATE.creatingBranch = false;
           await saveProfile();
+          await registerMembership(preset.slug);
           toast(`${preset.name} set up`);
           STATE.tab = 'today';
           render();
+        }
+        else if (action === 'grant-admin') {
+          if (!isAdmin()) return;
+          const b = STATE.branches.find(x => x.slug === STATE.profile.branch);
+          const admins = new Set(branchAdmins(b));
+          admins.add(el.dataset.uid);
+          b.admins = Array.from(admins);
+          await saveBranches();
+          toast('Admin access granted');
+          render();
+        }
+        else if (action === 'revoke-admin') {
+          if (!isAdmin()) return;
+          const b = STATE.branches.find(x => x.slug === STATE.profile.branch);
+          const admins = branchAdmins(b).filter(id => id !== el.dataset.uid);
+          if (admins.length === 0) { toast("A class needs at least one admin — promote someone else first"); return; }
+          b.admins = admins;
+          await saveBranches();
+          toast('Admin access removed');
+          render();
+        }
+        else if (action === 'copy-invite-link') {
+          const link = el.dataset.link;
+          try {
+            await navigator.clipboard.writeText(link);
+            toast('Invite link copied');
+          } catch {
+            prompt('Copy this link:', link);
+          }
         }
         else if (action === 'rename-branch') {
           if (!isAdmin() && !isUnclaimed()) { toast('Only the class admin can rename it'); return; }
@@ -1238,6 +1505,43 @@ export default function App() {
           toast('Request dismissed');
           render();
         }
+        else if (action === 'download-report') {
+          await downloadAttendanceReport();
+        }
+        else if (action === 'download-raw-data') {
+          downloadRawData();
+        }
+        else if (action === 'delete-my-data') {
+          const typed = prompt('This permanently deletes your profile, attendance history, assignment status, and saved logins — and cannot be undone.\n\nType DELETE to confirm:');
+          if (typed !== 'DELETE') { toast('Nothing was deleted'); return; }
+          const slug = STATE.profile.branch;
+          const deletions = [
+            storageDelete('profile', false),
+            storageDelete('attendance', false),
+            storageDelete('assignmentStatus', false),
+            storageDelete('savedLogins', false)
+          ];
+          if (slug) {
+            deletions.push(
+              storageDelete(bk(slug) + 'p_config', false),
+              storageDelete(bk(slug) + 'p_common', false),
+              storageDelete(bk(slug) + 'p_batch1', false),
+              storageDelete(bk(slug) + 'p_batch2', false)
+            );
+          }
+          await Promise.all(deletions);
+          toast('Your data has been deleted');
+          await signOut();
+        }
+        else if (action === 'install-app') {
+          if (!deferredInstallPrompt) return;
+          deferredInstallPrompt.prompt();
+          const choice = await deferredInstallPrompt.userChoice;
+          if (choice.outcome === 'accepted') toast('Installing…');
+          deferredInstallPrompt = null;
+          STATE.canInstall = false;
+          render();
+        }
         else if (action === 'add-login') {
           const label = document.getElementById('liLabel').value.trim();
           const username = document.getElementById('liUsername').value.trim();
@@ -1260,6 +1564,14 @@ export default function App() {
           const pwSpan = row.querySelector('.login-pw');
           pwSpan.textContent = pwSpan.textContent === '••••••••' ? el.dataset.pw : '••••••••';
         }
+
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error('Action failed:', action, err);
+          toast("Couldn't save that — check your connection and try again");
+          STATE.authBusy = false;
+          render();
+        }
       });
 
       document.addEventListener('change', (e) => {
@@ -1271,13 +1583,62 @@ export default function App() {
 
       /* ---------- boot ---------- */
       async function loadEverythingForSession() {
-        STATE.profile = (await storageGet('profile', false)) || { name: '', branch: null, batch: 'batch1' };
-        STATE.attendance = (await storageGet('attendance', false)) || {};
-        STATE.assignmentStatus = (await storageGet('assignmentStatus', false)) || {};
-        STATE.savedLogins = (await storageGet('savedLogins', false)) || [];
+        const [profile, attendance, assignmentStatus, savedLogins] = await Promise.all([
+          storageGet('profile', false),
+          storageGet('attendance', false),
+          storageGet('assignmentStatus', false),
+          storageGet('savedLogins', false)
+        ]);
+        // Safe to default to empty here: storageGet only resolves to null for
+        // a genuinely-empty key, and throws (caught by the caller) on an
+        // actual failure — so we never mistake "couldn't load" for "empty".
+        STATE.profile = profile || { name: '', branch: null, batch: 'batch1' };
+        STATE.attendance = attendance || {};
+        STATE.assignmentStatus = assignmentStatus || {};
+        STATE.savedLogins = savedLogins || [];
         await loadBranches();
         await loadBranchData(STATE.profile.branch);
         STATE.tab = 'today';
+      }
+
+      async function bootSession() {
+        STATE.bootError = null;
+        try {
+          await loadEverythingForSession();
+          await handleJoinLink();
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error('Failed to load your data on boot:', err);
+          // Deliberately don't fall back to empty defaults here — that's
+          // exactly the trap that used to risk overwriting real data with a
+          // blank slate. Show a retry screen and touch nothing until a load
+          // actually succeeds.
+          STATE.bootError = "Couldn't load your data — your saved attendance and timetable are safe, this device just couldn't reach them right now. Check your connection and try again.";
+        }
+        render();
+      }
+
+      // If the URL has ?join=SLUG (from an invite link/QR), offer to join
+      // that class. Always optional — declining just leaves things as they
+      // were. The param is stripped from the URL either way so refreshing
+      // doesn't re-prompt.
+      async function handleJoinLink() {
+        const params = new URLSearchParams(window.location.search);
+        const joinSlug = params.get('join');
+        if (!joinSlug) return;
+        const url = new URL(window.location.href);
+        url.searchParams.delete('join');
+        window.history.replaceState({}, '', url.pathname + url.search);
+
+        const branch = STATE.branches.find(b => b.slug === joinSlug);
+        if (!branch) { toast("That invite link isn't valid (anymore)"); return; }
+        if (STATE.profile.branch === joinSlug) return;
+        if (!confirm(`Join "${branch.name}"?\n\nYou'll get its timetable. This is optional — you can decline and keep your own personal timetable, or switch classes anytime from Profile.`)) return;
+        STATE.profile.branch = joinSlug;
+        await saveProfile();
+        await loadBranchData(joinSlug);
+        await registerMembership(joinSlug);
+        toast(`Joined ${branch.name}`);
       }
 
       function resetLocalState() {
@@ -1285,21 +1646,33 @@ export default function App() {
         STATE.common = null; STATE.batch1 = null; STATE.batch2 = null;
         STATE.assignments = []; STATE.assignmentStatus = {}; STATE.attendance = {};
         STATE.savedLogins = []; STATE.changeRequests = []; STATE.birthdays = {};
+        STATE.bootError = null;
         STATE.tab = 'today'; STATE.viewDate = todayStr(); STATE.creatingBranch = false;
       }
+
+      let deferredInstallPrompt = null;
+      window.addEventListener('beforeinstallprompt', (e) => {
+        e.preventDefault();
+        deferredInstallPrompt = e;
+        STATE.canInstall = true;
+        if (STATE.tab === 'profile') render();
+      });
+      window.addEventListener('appinstalled', () => {
+        deferredInstallPrompt = null;
+        STATE.canInstall = false;
+      });
 
       (async function init() {
         const session = await getSession();
         STATE.session = session;
-        if (session) await loadEverythingForSession();
-        render();
+        if (session) await bootSession();
+        else render();
 
         onAuthStateChange(async (session) => {
           const hadSession = !!STATE.session;
           STATE.session = session;
           if (session && !hadSession) {
-            await loadEverythingForSession();
-            render();
+            await bootSession();
           } else if (!session && hadSession) {
             resetLocalState();
             STATE.authMode = 'login';
