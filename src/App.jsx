@@ -70,6 +70,7 @@ export default function App() {
         tab: 'today',
         viewDate: todayStr(),
         setupDoTab: '1',
+        cancelHolidayFor: null,
         creatingBranch: false,
         newBranchDraft: '',
         calMode: 'year',
@@ -201,8 +202,12 @@ export default function App() {
         // 'exam' overrides are a note, not a day-type override: CTs don't
         // cancel classes, they just happen before the day's normal classes
         // resume, so day-order keeps advancing normally through them.
+        // 'workday' overrides mean "a holiday got cancelled — treat this as
+        // a normal working day and keep the cycle going", so they also fall
+        // through to the normal computation below instead of being returned
+        // directly like 'dayorder' (forced value) or 'holiday' (forced off).
         const directOv = cfg.overrides[dateStr];
-        if (directOv && directOv.type !== 'exam') return directOv;
+        if (directOv && (directOv.type === 'dayorder' || directOv.type === 'holiday')) return directOv;
         const target = parseDate(dateStr);
         const start = parseDate(cfg.startDate);
         if (target < start) return { type: 'before_start' };
@@ -212,7 +217,9 @@ export default function App() {
           cur.setDate(cur.getDate() + 1);
           const cds = fmt(cur);
           const ov = cfg.overrides[cds];
-          if (ov && ov.type !== 'exam') { if (ov.type === 'dayorder') currentDO = ov.value; }
+          if (ov && ov.type === 'dayorder') { currentDO = ov.value; }
+          else if (ov && ov.type === 'holiday') { /* off day — cycle doesn't advance */ }
+          else if (ov && ov.type === 'workday') { currentDO = (currentDO % 5) + 1; }
           else if (!cfg.skipDays.includes(cur.getDay()) && !holidayName(cds)) { currentDO = (currentDO % 5) + 1; }
         }
         if (!directOv) {
@@ -508,9 +515,25 @@ export default function App() {
           metaHtml = `<div class="ring-meta"><div class="ring-meta-title">Day Order ${doInfo.value}</div><div class="ring-meta-sub">${classes.length} class${classes.length !== 1 ? 'es' : ''} scheduled${classes.length ? ` · ${marked}/${classes.length} marked` : ''}</div>${ctNote}<button class="btn secondary" style="margin-top:10px;" data-action="mark-day-holiday" data-date="${d}">Mark this day as a holiday</button></div>`;
           classesHtml = classes.length ? classes.map(c => renderClassCard(d, c)).join('') : `<div class="card empty" style="padding:26px;"><p style="margin:0;">No classes added for Day Order ${doInfo.value} yet.</p></div>`;
         } else if (doInfo.type === 'holiday') {
-          const undoBtn = !doInfo.auto ? `<button class="btn secondary" style="margin-top:10px;" data-action="unmark-day-holiday" data-date="${d}">Undo — restore this day's order</button>` : '';
+          let cancelHtml;
+          if (!doInfo.auto) {
+            cancelHtml = `<button class="btn secondary" style="margin-top:10px;" data-action="unmark-day-holiday" data-date="${d}">Undo — restore this day's order</button>`;
+          } else if (STATE.cancelHolidayFor === d) {
+            cancelHtml = `
+              <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
+                <p class="hint" style="margin:0 0 8px;">Holiday cancelled — should this day continue the normal cycle, or use a specific Day Order?</p>
+                <button class="btn secondary full" style="margin-bottom:8px;" data-action="cancel-holiday-continue" data-date="${d}">Continue the normal cycle</button>
+                <div class="row2" style="margin-bottom:8px;">
+                  <select id="cancelHolidayDO">${[1, 2, 3, 4, 5].map(n => `<option value="${n}">Day Order ${n}</option>`).join('')}</select>
+                  <button class="btn secondary" data-action="cancel-holiday-setdo" data-date="${d}">Use this Day Order</button>
+                </div>
+                <button class="btn secondary full" data-action="cancel-holiday-abort">Never mind</button>
+              </div>`;
+          } else {
+            cancelHtml = `<button class="btn secondary" style="margin-top:10px;" data-action="open-cancel-holiday" data-date="${d}">Holiday cancelled? Mark as working day</button>`;
+          }
           ringHtml = `<div class="do-ring" style="background:var(--holiday-dim)"><div class="do-ring-inner"><div class="do-ring-num" style="font-size:20px;color:var(--holiday);">Off</div></div></div>`;
-          metaHtml = `<div class="ring-meta"><div class="ring-meta-title" style="color:var(--holiday);">Holiday</div><div class="ring-meta-sub">${doInfo.reason ? esc(doInfo.reason) : (doInfo.auto ? 'Weekly off' : 'Marked as holiday')} — no classes today.</div>${undoBtn}</div>`;
+          metaHtml = `<div class="ring-meta"><div class="ring-meta-title" style="color:var(--holiday);">Holiday</div><div class="ring-meta-sub">${doInfo.reason ? esc(doInfo.reason) : (doInfo.auto ? 'Weekly off' : 'Marked as holiday')} — no classes today.</div>${cancelHtml}</div>`;
           classesHtml = '';
         } else {
           ringHtml = `<div class="do-ring" style="background:rgba(255,255,255,0.08)"><div class="do-ring-inner"><div class="do-ring-num" style="font-size:16px;">—</div></div></div>`;
@@ -890,7 +913,7 @@ export default function App() {
         const overridesSorted = Object.entries(cfg.overrides).sort((a, b) => a[0].localeCompare(b[0]));
         const overridesHtml = overridesSorted.length ? overridesSorted.map(([date, ov]) => `
           <div class="override-row">
-            <div><div style="font-weight:600;font-size:13px;">${date}</div><div style="font-size:11px;color:var(--text-dim);">${ov.type === 'dayorder' ? 'Forced Day Order ' + ov.value : ov.type === 'exam' ? (ov.value ? esc(ov.value) : 'CT day') : 'Holiday'}</div></div>
+            <div><div style="font-weight:600;font-size:13px;">${date}</div><div style="font-size:11px;color:var(--text-dim);">${ov.type === 'dayorder' ? 'Forced Day Order ' + ov.value : ov.type === 'exam' ? (ov.value ? esc(ov.value) : 'CT day') : ov.type === 'workday' ? 'Holiday cancelled — working day' : 'Holiday'}</div></div>
             <button class="icon-btn" data-action="delete-override" data-date="${date}">✕</button>
           </div>`).join('') : `<div style="font-size:12px;color:var(--text-dim2);padding:4px 0 2px;">No exceptions added yet.</div>`;
 
@@ -993,6 +1016,7 @@ export default function App() {
             <div class="field"><label>Type</label>
               <select id="ovType">
                 <option value="holiday">Holiday / long weekend</option>
+                <option value="workday">Holiday cancelled (working day, cycle continues)</option>
                 <option value="exam">CT day (classes resume after)</option>
                 <option value="dayorder">Force a specific Day Order</option>
               </select>
@@ -1353,6 +1377,27 @@ export default function App() {
           delete STATE.config.overrides[date];
           await saveConfig();
           toast('Holiday removed — day order restored');
+          render();
+        }
+        else if (action === 'open-cancel-holiday') { STATE.cancelHolidayFor = el.dataset.date; render(); }
+        else if (action === 'cancel-holiday-abort') { STATE.cancelHolidayFor = null; render(); }
+        else if (action === 'cancel-holiday-continue') {
+          ensurePersonal();
+          const date = el.dataset.date;
+          STATE.config.overrides[date] = { type: 'workday', value: null };
+          STATE.cancelHolidayFor = null;
+          await saveConfig();
+          toast('Marked as a working day — cycle continues normally');
+          render();
+        }
+        else if (action === 'cancel-holiday-setdo') {
+          ensurePersonal();
+          const date = el.dataset.date;
+          const value = Number(document.getElementById('cancelHolidayDO').value);
+          STATE.config.overrides[date] = { type: 'dayorder', value };
+          STATE.cancelHolidayFor = null;
+          await saveConfig();
+          toast('Day Order set for this day');
           render();
         }
         else if (action === 'set-do-tab') { STATE.setupDoTab = el.dataset.do; render(); }
@@ -1748,7 +1793,7 @@ export default function App() {
         STATE.assignments = []; STATE.assignmentStatus = {}; STATE.attendance = {}; STATE.internalMarks = {};
         STATE.savedLogins = []; STATE.changeRequests = []; STATE.birthdays = {};
         STATE.bootError = null;
-        STATE.tab = 'today'; STATE.viewDate = todayStr(); STATE.creatingBranch = false;
+        STATE.tab = 'today'; STATE.viewDate = todayStr(); STATE.creatingBranch = false; STATE.cancelHolidayFor = null;
       }
 
       let deferredInstallPrompt = null;
