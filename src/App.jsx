@@ -61,10 +61,12 @@ export default function App() {
         birthdays: {},
         members: {},
         savedLogins: [],
+        pendingRememberLogin: null,
         canInstall: false,
         assignments: [],
         assignmentStatus: {},
         attendance: {},
+        internalMarks: {},
         tab: 'today',
         viewDate: todayStr(),
         setupDoTab: '1',
@@ -317,6 +319,14 @@ export default function App() {
         render();
       }
 
+      function subjectMarks(subject) {
+        const entries = (STATE.internalMarks[subject] || []).slice().sort((a, b) => a.test.localeCompare(b.test));
+        const totObtained = entries.reduce((s, e) => s + e.obtained, 0);
+        const totOutOf = entries.reduce((s, e) => s + e.total, 0);
+        const pct = totOutOf > 0 ? (totObtained / totOutOf * 100) : null;
+        return { entries, pct };
+      }
+
       function subjectStats(subject) {
         const entries = Object.values(STATE.attendance).filter(e => e.subject === subject);
         const counts = { present: 0, absent: 0, cancelled: 0, faculty_absent: 0, od: 0 };
@@ -403,7 +413,9 @@ export default function App() {
       }
 
       function renderAppShell() {
-        const soon = STATE.profile && STATE.profile.branch ? (getNotifications()[0]?.days ?? 99) <= 3 : false;
+        // Red dot on the bell should only light up on the actual day of the
+        // nearest event (days === 0) — not for several days beforehand.
+        const soon = STATE.profile && STATE.profile.branch ? (getNotifications()[0]?.days ?? 99) === 0 : false;
         const bellIcon = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>`;
         return `
           <div class="app with-nav" id="app">
@@ -441,6 +453,12 @@ export default function App() {
 
             <div class="field"><label>Username</label><input type="text" id="authUsername" placeholder="e.g. yogeswar_k" autocapitalize="off" autocorrect="off" spellcheck="false"></div>
             <div class="field"><label>Password</label><input type="text" id="authPassword" placeholder="At least 6 characters" style="-webkit-text-security:disc;"></div>
+            ${isLogin ? `
+              <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-dim);margin-top:2px;">
+                <input type="checkbox" id="authRemember" style="width:auto;">
+                Remember this login (saves it to Saved logins in Profile)
+              </label>
+            ` : ''}
             ${STATE.authError ? `<div class="note-box" style="border-color:var(--absent);color:var(--absent);">${esc(STATE.authError)}</div>` : ''}
 
             <button class="btn full" style="margin-top:14px;" data-action="${isLogin ? 'do-login' : 'do-signup'}" ${STATE.authBusy ? 'disabled' : ''}>
@@ -490,11 +508,12 @@ export default function App() {
           const classes = getClassesForDO(doInfo.value);
           const marked = classes.filter(c => getStatus(d, c.id)).length;
           const ctNote = doInfo.examNote ? `<div class="ct-note">📝 ${esc(doInfo.examNote)} today — classes run as usual afterwards.</div>` : '';
-          metaHtml = `<div class="ring-meta"><div class="ring-meta-title">Day Order ${doInfo.value}</div><div class="ring-meta-sub">${classes.length} class${classes.length !== 1 ? 'es' : ''} scheduled${classes.length ? ` · ${marked}/${classes.length} marked` : ''}</div>${ctNote}</div>`;
+          metaHtml = `<div class="ring-meta"><div class="ring-meta-title">Day Order ${doInfo.value}</div><div class="ring-meta-sub">${classes.length} class${classes.length !== 1 ? 'es' : ''} scheduled${classes.length ? ` · ${marked}/${classes.length} marked` : ''}</div>${ctNote}<button class="btn secondary" style="margin-top:10px;" data-action="mark-day-holiday" data-date="${d}">Mark this day as a holiday</button></div>`;
           classesHtml = classes.length ? classes.map(c => renderClassCard(d, c)).join('') : `<div class="card empty" style="padding:26px;"><p style="margin:0;">No classes added for Day Order ${doInfo.value} yet.</p></div>`;
         } else if (doInfo.type === 'holiday') {
+          const undoBtn = !doInfo.auto ? `<button class="btn secondary" style="margin-top:10px;" data-action="unmark-day-holiday" data-date="${d}">Undo — restore this day's order</button>` : '';
           ringHtml = `<div class="do-ring" style="background:var(--holiday-dim)"><div class="do-ring-inner"><div class="do-ring-num" style="font-size:20px;color:var(--holiday);">Off</div></div></div>`;
-          metaHtml = `<div class="ring-meta"><div class="ring-meta-title" style="color:var(--holiday);">Holiday</div><div class="ring-meta-sub">${doInfo.reason ? esc(doInfo.reason) : (doInfo.auto ? 'Weekly off' : 'Marked as holiday')} — no classes today.</div></div>`;
+          metaHtml = `<div class="ring-meta"><div class="ring-meta-title" style="color:var(--holiday);">Holiday</div><div class="ring-meta-sub">${doInfo.reason ? esc(doInfo.reason) : (doInfo.auto ? 'Weekly off' : 'Marked as holiday')} — no classes today.</div>${undoBtn}</div>`;
           classesHtml = '';
         } else {
           ringHtml = `<div class="do-ring" style="background:rgba(255,255,255,0.08)"><div class="do-ring-inner"><div class="do-ring-num" style="font-size:16px;">—</div></div></div>`;
@@ -663,6 +682,27 @@ export default function App() {
         return STATE.calMode === 'month' ? renderCalendarMonth() : renderCalendarYear();
       }
 
+      function renderMarksSection(subject) {
+        const { entries, pct } = subjectMarks(subject);
+        const rows = entries.map(e => `
+          <div class="log-row">
+            <span class="ld">${esc(e.test)}</span>
+            <span>${e.obtained} / ${e.total}</span>
+            <span style="font-weight:600;">${(e.obtained / e.total * 100).toFixed(1)}%</span>
+            <button class="icon-btn" data-action="delete-mark" data-subject="${esc(subject)}" data-id="${e.id}" style="margin-left:6px;">✕</button>
+          </div>`).join('') || `<div style="font-size:12px;color:var(--text-dim2);">No marks entered yet.</div>`;
+        return `
+          <div class="section-label" style="margin-top:14px;margin-bottom:6px;font-size:11.5px;">Internal marks${pct !== null ? ` · ${pct.toFixed(1)}% overall` : ''}</div>
+          <div class="subj-log">${rows}</div>
+          <div class="row2" style="margin-top:8px;gap:6px;">
+            <input type="text" id="mkTest-${cssSafe(subject)}" placeholder="Test name (e.g. CT-1)" style="flex:1.4;">
+            <input type="text" inputmode="numeric" id="mkObtained-${cssSafe(subject)}" placeholder="Got" style="flex:1;">
+            <input type="text" inputmode="numeric" id="mkTotal-${cssSafe(subject)}" placeholder="Out of" style="flex:1;">
+          </div>
+          <button class="btn secondary full" style="margin-top:6px;" data-action="add-mark" data-subject="${esc(subject)}">+ Add mark</button>
+        `;
+      }
+
       function renderSubjects() {
         if (!STATE.profile.branch) {
           return `<div class="card empty"><div class="ic">▤</div><h3>No class set up yet</h3><p>Pick or create a class in Profile first.</p><button class="btn" data-action="nav-tab" data-tab="profile">Go to Profile</button></div>`;
@@ -704,6 +744,7 @@ export default function App() {
               </div>
               ${st.advice ? `<div class="subj-advice" style="background:${adviceBg};color:${adviceColor}">${st.advice}</div>` : ''}
               <div class="subj-log" id="log-${cssSafe(s)}">${log}</div>
+              ${renderMarksSection(s)}
             </div>`;
         }).join('');
         return `
@@ -726,6 +767,7 @@ export default function App() {
           className: branchName(STATE.profile.branch),
           batch: BATCH_META[STATE.profile.batch]?.label,
           attendance: STATE.attendance,
+          internalMarks: STATE.internalMarks,
           assignmentStatus: STATE.assignmentStatus
         };
         const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -1215,11 +1257,13 @@ export default function App() {
           if (!username || !password) { STATE.authError = 'Enter your username and password.'; render(); return; }
           if (!isValidUsername(username)) { STATE.authError = 'Username should be 3–20 letters, numbers, underscores or dots.'; render(); return; }
           if (action === 'do-signup' && password.length < 6) { STATE.authError = 'Password should be at least 6 characters.'; render(); return; }
+          const remember = action === 'do-login' && (document.getElementById('authRemember') || {}).checked;
           STATE.authBusy = true; STATE.authError = ''; render();
           const { error } = action === 'do-login' ? await signIn(username, password) : await signUp(username, password);
           STATE.authBusy = false;
           if (error) { STATE.authError = error.message; render(); return; }
           if (action === 'do-signup') { STATE.authError = 'Account created — log in with your new username.'; STATE.authMode = 'login'; render(); return; }
+          if (remember) STATE.pendingRememberLogin = { username, password };
           return; // successful login triggers onAuthStateChange -> boot()
         }
         if (action === 'logout') {
@@ -1288,6 +1332,22 @@ export default function App() {
           ensurePersonal();
           delete STATE.config.overrides[el.dataset.date];
           await saveConfig();
+          render();
+        }
+        else if (action === 'mark-day-holiday') {
+          ensurePersonal();
+          const date = el.dataset.date;
+          STATE.config.overrides[date] = { type: 'holiday', value: null };
+          await saveConfig();
+          toast('Marked as holiday — day order shifted for the days after');
+          render();
+        }
+        else if (action === 'unmark-day-holiday') {
+          ensurePersonal();
+          const date = el.dataset.date;
+          delete STATE.config.overrides[date];
+          await saveConfig();
+          toast('Holiday removed — day order restored');
           render();
         }
         else if (action === 'set-do-tab') { STATE.setupDoTab = el.dataset.do; render(); }
@@ -1364,6 +1424,27 @@ export default function App() {
             toast('Attendance history cleared');
             render();
           }
+        }
+        else if (action === 'add-mark') {
+          const subject = el.dataset.subject;
+          const safe = cssSafe(subject);
+          const test = (document.getElementById(`mkTest-${safe}`) || {}).value?.trim();
+          const obtained = Number((document.getElementById(`mkObtained-${safe}`) || {}).value);
+          const total = Number((document.getElementById(`mkTotal-${safe}`) || {}).value);
+          if (!test) { toast('Give the test a name'); return; }
+          if (!total || total <= 0) { toast("Enter what it's out of"); return; }
+          if (obtained < 0 || obtained > total) { toast('Marks obtained should be between 0 and the total'); return; }
+          if (!STATE.internalMarks[subject]) STATE.internalMarks[subject] = [];
+          STATE.internalMarks[subject].push({ id: uid(), test, obtained, total });
+          await storageSet('internalMarks', STATE.internalMarks, false);
+          toast('Mark added');
+          render();
+        }
+        else if (action === 'delete-mark') {
+          const subject = el.dataset.subject;
+          STATE.internalMarks[subject] = (STATE.internalMarks[subject] || []).filter(e => e.id !== el.dataset.id);
+          await storageSet('internalMarks', STATE.internalMarks, false);
+          render();
         }
         else if (action === 'start-create-branch') { STATE.creatingBranch = true; STATE.newBranchDraft = ''; render(); }
         else if (action === 'cancel-create-branch') { STATE.creatingBranch = false; render(); }
@@ -1512,14 +1593,15 @@ export default function App() {
           downloadRawData();
         }
         else if (action === 'delete-my-data') {
-          const typed = prompt('This permanently deletes your profile, attendance history, assignment status, and saved logins — and cannot be undone.\n\nType DELETE to confirm:');
+          const typed = prompt('This permanently deletes your profile, attendance history, internal marks, assignment status, and saved logins — and cannot be undone.\n\nType DELETE to confirm:');
           if (typed !== 'DELETE') { toast('Nothing was deleted'); return; }
           const slug = STATE.profile.branch;
           const deletions = [
             storageDelete('profile', false),
             storageDelete('attendance', false),
             storageDelete('assignmentStatus', false),
-            storageDelete('savedLogins', false)
+            storageDelete('savedLogins', false),
+            storageDelete('internalMarks', false)
           ];
           if (slug) {
             deletions.push(
@@ -1583,19 +1665,33 @@ export default function App() {
 
       /* ---------- boot ---------- */
       async function loadEverythingForSession() {
-        const [profile, attendance, assignmentStatus, savedLogins] = await Promise.all([
+        const [profile, attendance, assignmentStatus, savedLogins, internalMarks] = await Promise.all([
           storageGet('profile', false),
           storageGet('attendance', false),
           storageGet('assignmentStatus', false),
-          storageGet('savedLogins', false)
+          storageGet('savedLogins', false),
+          storageGet('internalMarks', false)
         ]);
         // Safe to default to empty here: storageGet only resolves to null for
         // a genuinely-empty key, and throws (caught by the caller) on an
         // actual failure — so we never mistake "couldn't load" for "empty".
         STATE.profile = profile || { name: '', branch: null, batch: 'batch1' };
         STATE.attendance = attendance || {};
+        STATE.internalMarks = internalMarks || {};
         STATE.assignmentStatus = assignmentStatus || {};
         STATE.savedLogins = savedLogins || [];
+        if (STATE.pendingRememberLogin) {
+          const { username: ruser, password: rpass } = STATE.pendingRememberLogin;
+          STATE.pendingRememberLogin = null;
+          const already = STATE.savedLogins.some(l => l.username === ruser);
+          if (!already) {
+            STATE.savedLogins.push({ id: uid(), label: `Login — ${ruser}`, username: ruser, password: rpass });
+            storageSet('savedLogins', STATE.savedLogins, false).catch((err) => {
+              // eslint-disable-next-line no-console
+              console.warn('Failed to save remembered login:', err);
+            });
+          }
+        }
         await loadBranches();
         await loadBranchData(STATE.profile.branch);
         STATE.tab = 'today';
@@ -1644,7 +1740,7 @@ export default function App() {
       function resetLocalState() {
         STATE.profile = null; STATE.branches = []; STATE.config = null;
         STATE.common = null; STATE.batch1 = null; STATE.batch2 = null;
-        STATE.assignments = []; STATE.assignmentStatus = {}; STATE.attendance = {};
+        STATE.assignments = []; STATE.assignmentStatus = {}; STATE.attendance = {}; STATE.internalMarks = {};
         STATE.savedLogins = []; STATE.changeRequests = []; STATE.birthdays = {};
         STATE.bootError = null;
         STATE.tab = 'today'; STATE.viewDate = todayStr(); STATE.creatingBranch = false;
