@@ -1,0 +1,26 @@
+name: Supabase nightly backup
+
+on:
+  schedule:
+    - cron: '30 20 * * *'   # 20:30 UTC = 2:00 AM IST, adjust as you like
+  workflow_dispatch: {}      # lets you also trigger it manually from GitHub
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dump database
+        env:
+          # Set this in your repo: Settings -> Secrets and variables -> Actions
+          # Value = your Supabase connection string (Project Settings -> Database -> Connection string -> URI)
+          DATABASE_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          pg_dump "$DATABASE_URL" --no-owner --no-privileges -f backup.sql
+
+      - name: Upload as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: supabase-backup-${{ github.run_id }}
+          path: backup.sql
+          retention-days: 30
