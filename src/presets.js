@@ -13,41 +13,42 @@ export const PRESETS = [
     slug: 'mtech-vlsi-sem3-2026',
     name: 'M.Tech VLSI — Sem 3 (2026-27), SRM IST Chennai',
     subjects: {
-      '21ECC530J': 'Electronic Design Automation for ASIC and FPGA',
-      '21ECC531J': 'Digital System Design Using HDL',
-      '21ECC532T': 'Solid State Devices and Modeling',
-      '21IPC501J': 'Research Methodology',
-      '21ECU531T': 'Signal Processing Techniques for VLSI'
+      '21ECC630T': 'Characterisation of Semiconductor Materials and Devices',
+      '21ECE636T': 'Electronics Packaging, Assembly and Testing',
+      '21ECE6381': 'Reliability Engineering of IC Technology',
+      '21ECG601T': 'Case Study'
     },
     timeSlots: [
       '08:00-08:50', '08:50-09:40', '09:45-10:35', '10:40-11:30', '11:35-12:25',
       '12:30-13:20', '13:25-14:15', '14:20-15:10', '15:15-16:00', '16:05-16:50'
     ],
+    // ASSUMPTION — please correct if wrong: kept the same start date/Day
+    // Order as the previous timetable, since the official sheet only gave
+    // the weekly grid, not a semester start date.
     startDate: '2026-07-21',
     startDayOrder: 1,
-    // Two batches. Slot numbers are 1-indexed into timeSlots above.
-    // "common" entries apply to everyone; "B1"/"B2" entries apply only to
-    // that batch (maps onto the app's existing batch1/batch2 concept).
-    batches: ['B1', 'B2'],
+    // Single batch this semester — the official sheet only showed one
+    // schedule (no B1/B2 split in the grid itself). The handwritten note
+    // "B1 - E slot D3:3.10 to 4 and DOS: 8-9.40" on the sheet suggests a
+    // possible batch-specific override for Case Study, NOT yet applied
+    // here — flag when you confirm what it means and this can be added
+    // as a B1-only override.
+    batches: [],
     dayOrderTimetable: {
       '1': {
-        common: [[3, '21ECU531T']],
-        B2: [[7, '21ECC531J(LAB)']]
+        common: [[6, '21ECE636T']]
       },
       '2': {
-        B1: [[1, '21ECC530J(LAB)']],
-        common: [[6, '21ECC530J'], [7, '21IPC501J(LAB)']]
+        common: [[7, '21ECE6381'], [8, '21ECE6381'], [9, '21ECE636T'], [10, '21ECE636T']]
       },
       '3': {
-        common: [[1, '21ECC531J'], [3, '21ECC532T'], [4, '21ECC530J']],
-        B1: [[7, '21ECC531J(LAB)']]
+        common: [[2, '21ECC630T'], [3, '21ECC630T'], [6, '21ECE6381']]
       },
       '4': {
-        B2: [[2, '21ECC530J(LAB)']],
-        common: [[6, '21ECC532T'], [7, '21ECC530J'], [8, '21IPC501J'], [9, '21ECC531J']]
+        common: [[4, '21ECC630T(LAB)'], [5, '21ECC630T(LAB)'], [9, '21ECE6381'], [10, '21ECG601T']]
       },
       '5': {
-        common: [[1, '21IPC501J'], [2, '21ECC531J'], [3, '21ECU531T'], [4, '21ECC532T']]
+        common: [[2, '21ECG601T'], [3, '21ECG601T'], [4, '21ECC630T']]
       }
     },
     // Dates matching "CT-" become a continuous run of exam-day overrides —
@@ -55,15 +56,12 @@ export const PRESETS = [
     // per day (5 subjects here = 5 consecutive working days). Everything in
     // this list also shows up as a read-only Academic Calendar in the
     // Notifications tab.
+    // Cleared out — these were carried over from the old (replaced)
+    // timetable and haven't been confirmed against the new one. Send the
+    // academic calendar / CT dates when you have them and these can be
+    // filled back in.
     academicEvents: [
-      { label: 'Enrollment', date: '2026-07-20' },
-      { label: 'Classes start', date: '2026-07-21' },
-      { label: 'CT-1 / CA-1', date: '2026-09-16' },
-      { label: 'CT-2 / CA-2', date: '2026-11-10' },
-      { label: 'Practical exams start', date: '2026-11-10' },
-      { label: 'Last working day', date: '2026-11-20' },
-      { label: 'Theory exams start', date: '2026-11-25' },
-      { label: 'Next semester enrollment', date: '2027-01-06' }
+      { label: 'Classes start', date: '2026-07-21' }
     ]
   }
 ];

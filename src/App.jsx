@@ -6,6 +6,7 @@ import {
 } from "./auth.js";
 import { dayKind, holidayName } from "./holidays.js";
 import { PRESETS, buildPresetTimetable, buildPresetOverrides } from "./presets.js";
+import { lookupRollNumber } from "./rosters.js";
 import { APP_VERSION } from "./version.js";
 import logoUrl from "./assets/logo.png";
 import "./App.css";
@@ -76,7 +77,9 @@ export default function App() {
         newBranchDraft: '',
         calMode: 'year',
         calYear: new Date().getFullYear(),
-        calMonth: new Date().getMonth()
+        calMonth: new Date().getMonth(),
+        rollNumberBusy: false,
+        rollNumberError: ''
       };
 
       const bk = slug => `branch__${slug}__`;
@@ -194,6 +197,43 @@ export default function App() {
       async function saveAssignments() { await storageSet(bk(STATE.profile.branch) + 'assignments', STATE.assignments, true); }
       async function saveAssignmentStatus() { await storageSet('assignmentStatus', STATE.assignmentStatus, false); }
       async function saveProfile() { await storageSet('profile', STATE.profile, false); }
+
+      // Sets up (or joins) a class from a ready-made preset. Shared by the
+      // manual "Ready-made classes" picker in Profile and the post-login
+      // Register No. auto-assign flow. Only seeds the shared timetable if
+      // this class hasn't been seeded before, so re-applying later (e.g. an
+      // already-set-up class) never wipes anyone's edits.
+      async function applyPreset(preset) {
+        if (!STATE.branches.find(b => b.slug === preset.slug)) {
+          STATE.branches.push({ slug: preset.slug, name: preset.name, createdBy: currentUid(), admins: [currentUid()] });
+          await saveBranches();
+        }
+        // Must set profile.branch BEFORE loading/saving, since loadBranchData,
+        // saveConfig and saveCollection all key their storage off
+        // STATE.profile.branch.
+        STATE.profile.branch = preset.slug;
+        await loadBranchData(preset.slug);
+        if (STATE.sharedConfig.seededFrom !== preset.slug) {
+          STATE.config = {
+            startDate: preset.startDate,
+            startDayOrder: preset.startDayOrder,
+            skipDays: [0, 6],
+            overrides: buildPresetOverrides(preset),
+            academicEvents: preset.academicEvents,
+            seededFrom: preset.slug
+          };
+          const tt = buildPresetTimetable(preset);
+          STATE.common = tt.common;
+          STATE.batch1 = tt.batch1;
+          STATE.batch2 = tt.batch2;
+          await saveConfig();
+          await saveCollection('common');
+          await saveCollection('batch1');
+          await saveCollection('batch2');
+        }
+        await saveProfile();
+        await registerMembership(preset.slug);
+      }
 
       function branchName(slug) { if (!slug) return 'No class set'; const b = STATE.branches.find(x => x.slug === slug); return b ? b.name : slug; }
 
@@ -383,6 +423,11 @@ export default function App() {
           return;
         }
 
+        if (!STATE.profile.branch && !STATE.profile.rollNumberPromptDismissed) {
+          root.innerHTML = renderRollNumberPrompt();
+          return;
+        }
+
         root.innerHTML = renderAppShell();
         document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === STATE.tab));
         const main = document.getElementById('main');
@@ -437,6 +482,21 @@ export default function App() {
             </div>
           </div>
           <div class="toast" id="toast"></div>
+        `;
+      }
+
+      function renderRollNumberPrompt() {
+        return `
+          <div class="onboard-wrap">
+            <div class="onboard-logo"><img src="${logoUrl}" alt="" /></div>
+            <h1 class="onboard-title">Find your class</h1>
+            <p class="onboard-sub">Enter your Register No. and we'll set up your timetable automatically.</p>
+            <div class="field"><label>Register No.</label><input type="text" id="rollNumberInput" placeholder="e.g. RA2512008010001" autocapitalize="characters" autocorrect="off" spellcheck="false" ${STATE.rollNumberBusy ? 'disabled' : ''}></div>
+            ${STATE.rollNumberError ? `<div class="note-box" style="border-color:var(--absent);color:var(--absent);">${esc(STATE.rollNumberError)}</div>` : ''}
+            <button class="btn full" style="margin-top:14px;" data-action="submit-roll-number" ${STATE.rollNumberBusy ? 'disabled' : ''}>${STATE.rollNumberBusy ? 'Looking up…' : 'Find my class'}</button>
+            <button class="btn secondary full" style="margin-top:10px;" data-action="skip-roll-number">Skip — I'll pick my class manually</button>
+            <div class="version-tag">v${APP_VERSION}</div>
+          </div>
         `;
       }
 
@@ -1165,6 +1225,7 @@ export default function App() {
           <div class="section-label">Your profile</div>
           <div class="card">
             <div class="field"><label>Name</label><input type="text" id="pfName" value="${esc(STATE.profile.name || '')}" placeholder="Your name"></div>
+            <div class="field"><label>Register No. <span style="font-weight:400;color:var(--text-dim2);">(optional)</span></label><input type="text" id="pfRollNumber" value="${esc(STATE.profile.rollNumber || '')}" placeholder="e.g. RA2512008010001" autocapitalize="characters" autocorrect="off" spellcheck="false"></div>
 
             <div class="field"><label>Class</label>
               ${STATE.branches.length ? `<select id="pfBranch">${options}</select>` : `<div class="hint" style="margin:0;">No classes exist yet — create one below.</div>`}
@@ -1422,7 +1483,8 @@ export default function App() {
           const batch = document.getElementById('pfBatch').value;
           const birthday = (document.getElementById('pfBirthday') || {}).value || '';
           const branchChanged = branch !== STATE.profile.branch;
-          STATE.profile = { name, branch: branch || null, batch, birthday };
+          const rollNumber = (document.getElementById('pfRollNumber') || {}).value?.trim().toUpperCase() || '';
+          STATE.profile = { ...STATE.profile, name, branch: branch || null, batch, birthday, rollNumber };
           await saveProfile();
           if (branchChanged) await loadBranchData(STATE.profile.branch);
           if (STATE.profile.branch) await registerMembership(STATE.profile.branch);
@@ -1462,42 +1524,46 @@ export default function App() {
           toast('Class created');
           render();
         }
+        else if (action === 'submit-roll-number') {
+          const input = document.getElementById('rollNumberInput');
+          const rollNumber = (input?.value || '').trim();
+          if (!rollNumber) { STATE.rollNumberError = 'Enter your Register No. first.'; render(); return; }
+          const match = lookupRollNumber(rollNumber);
+          if (!match) {
+            STATE.rollNumberError = "That Register No. wasn't found in any class list. Check it and try again, or skip and pick your class manually.";
+            render();
+            return;
+          }
+          const preset = PRESETS.find(p => p.slug === match.slug);
+          if (!preset) { STATE.rollNumberError = "That class isn't available right now."; render(); return; }
+          STATE.rollNumberBusy = true; STATE.rollNumberError = ''; render();
+          try {
+            STATE.profile.rollNumber = rollNumber.toUpperCase();
+            STATE.profile.rollNumberPromptDismissed = true;
+            if (!STATE.profile.name) STATE.profile.name = match.name;
+            await applyPreset(preset);
+            toast(`Welcome, ${match.name.split(' ')[0]} — ${preset.name} set up`);
+            STATE.tab = 'today';
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.error('Roll number auto-assign failed:', err);
+            STATE.profile.rollNumberPromptDismissed = false;
+            STATE.rollNumberError = "Couldn't set up your class — check your connection and try again.";
+          } finally {
+            STATE.rollNumberBusy = false;
+            render();
+          }
+        }
+        else if (action === 'skip-roll-number') {
+          STATE.profile.rollNumberPromptDismissed = true;
+          await saveProfile();
+          render();
+        }
         else if (action === 'use-preset') {
           const preset = PRESETS.find(p => p.slug === el.dataset.slug);
           if (!preset) return;
-          if (!STATE.branches.find(b => b.slug === preset.slug)) {
-            STATE.branches.push({ slug: preset.slug, name: preset.name, createdBy: currentUid(), admins: [currentUid()] });
-            await saveBranches();
-          }
-          // Must set profile.branch BEFORE loading/saving, since loadBranchData,
-          // saveConfig and saveCollection all key their storage off
-          // STATE.profile.branch — setting it after the saves (as before) wrote
-          // the seeded timetable under the wrong branch key entirely.
-          STATE.profile.branch = preset.slug;
-          await loadBranchData(preset.slug);
-          // Only seed the timetable if this shared class hasn't already been
-          // seeded before (so re-picking it later doesn't wipe anyone's edits).
-          if (STATE.sharedConfig.seededFrom !== preset.slug) {
-            STATE.config = {
-              startDate: preset.startDate,
-              startDayOrder: preset.startDayOrder,
-              skipDays: [0, 6],
-              overrides: buildPresetOverrides(preset),
-              academicEvents: preset.academicEvents,
-              seededFrom: preset.slug
-            };
-            const tt = buildPresetTimetable(preset);
-            STATE.common = tt.common;
-            STATE.batch1 = tt.batch1;
-            STATE.batch2 = tt.batch2;
-            await saveConfig();
-            await saveCollection('common');
-            await saveCollection('batch1');
-            await saveCollection('batch2');
-          }
+          await applyPreset(preset);
           STATE.creatingBranch = false;
-          await saveProfile();
-          await registerMembership(preset.slug);
           toast(`${preset.name} set up`);
           STATE.tab = 'today';
           render();
@@ -1678,7 +1744,7 @@ export default function App() {
         // Safe to default to empty here: storageGet only resolves to null for
         // a genuinely-empty key, and throws (caught by the caller) on an
         // actual failure — so we never mistake "couldn't load" for "empty".
-        STATE.profile = profile || { name: '', branch: null, batch: 'batch1' };
+        STATE.profile = profile || { name: '', branch: null, batch: 'batch1', rollNumber: '', rollNumberPromptDismissed: false };
         STATE.attendance = attendance || {};
         STATE.assignmentStatus = assignmentStatus || {};
         STATE.savedLogins = savedLogins || [];
