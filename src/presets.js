@@ -11,22 +11,23 @@ import { holidayName } from './holidays.js';
 export const PRESETS = [
   {
     slug: 'mtech-vlsi-sem3-2026',
-    name: 'M.Tech VLSI — Sem 3 (2026-27), SRM IST Chennai',
+    name: 'M.Tech - VLSI - 3rd Sem',
     subjects: {
-      '21ECC630T': 'Characterisation of Semiconductor Materials and Devices',
-      '21ECE636T': 'Electronics Packaging, Assembly and Testing',
-      '21ECE6381': 'Reliability Engineering of IC Technology',
-      '21ECG601T': 'Case Study'
+      '21ENC367': 'Characterisation of Semiconductor Materials and Devices — Dr. Elangovan Elamurugu, TP1511',
+      '21NEE361': 'Reliability Engineering — Dr. Priyadarsini, TP1502',
+      '21ENC365': 'Reliability Engineering Technology — Various Faculty, TP1512',
+      '21EEC607': 'Case Study — faculty depends on registration number',
+      '21NET611': 'Characterisation of Semiconductor Materials and Devices Lab — Dr. Elangovan Elamurugu, Immersive Nano Fabrication Lab'
     },
+    // 10 real class periods — per the official timetable, Period 6
+    // (12:30–13:20) is a normal class period, NOT a lunch break.
     timeSlots: [
       '08:00-08:50', '08:50-09:40', '09:45-10:35', '10:40-11:30', '11:35-12:25',
       '12:30-13:20', '13:25-14:15', '14:20-15:10', '15:15-16:00', '16:05-16:50'
     ],
-    // ASSUMPTION — please correct if wrong: kept the same start date/Day
-    // Order as the previous timetable, since the official sheet only gave
-    // the weekly grid, not a semester start date.
-    startDate: '2026-07-21',
-    startDayOrder: 1,
+    // Anchor: Monday, 3 Aug 2026 is Day Order 5.
+    startDate: '2026-08-03',
+    startDayOrder: 5,
     // Single batch this semester — the official sheet only showed one
     // schedule (no B1/B2 split in the grid itself). The handwritten note
     // "B1 - E slot D3:3.10 to 4 and DOS: 8-9.40" on the sheet suggests a
@@ -34,34 +35,22 @@ export const PRESETS = [
     // here — flag when you confirm what it means and this can be added
     // as a B1-only override.
     batches: [],
+    // Still waiting on the actual weekly grid (which period holds which
+    // subject on each Day Order) — the academic-calendar doc gave subjects,
+    // faculty and timings but not the period-by-Day-Order placement.
     dayOrderTimetable: {
-      '1': {
-        common: [[6, '21ECE636T']]
-      },
-      '2': {
-        common: [[7, '21ECE6381'], [8, '21ECE6381'], [9, '21ECE636T'], [10, '21ECE636T']]
-      },
-      '3': {
-        common: [[2, '21ECC630T'], [3, '21ECC630T'], [6, '21ECE6381']]
-      },
-      '4': {
-        common: [[4, '21ECC630T(LAB)'], [5, '21ECC630T(LAB)'], [9, '21ECE6381'], [10, '21ECG601T']]
-      },
-      '5': {
-        common: [[2, '21ECG601T'], [3, '21ECG601T'], [4, '21ECC630T']]
-      }
+      '1': { common: [] },
+      '2': { common: [] },
+      '3': { common: [] },
+      '4': { common: [] },
+      '5': { common: [] }
     },
-    // Dates matching "CT-" become a continuous run of exam-day overrides —
-    // one working day per subject, since a Cycle Test week runs one subject
-    // per day (5 subjects here = 5 consecutive working days). Everything in
-    // this list also shows up as a read-only Academic Calendar in the
-    // Notifications tab.
-    // Cleared out — these were carried over from the old (replaced)
-    // timetable and haven't been confirmed against the new one. Send the
-    // academic calendar / CT dates when you have them and these can be
-    // filled back in.
+    // Semester dates confirmed; no exam/CT dates given yet — add them here
+    // (label starting "CT-" for a Cycle Test, or "exam"/"FT-"/"CA-") once
+    // known, and they'll auto-show as exam notes on the Calendar tab.
     academicEvents: [
-      { label: 'Classes start', date: '2026-07-21' }
+      { label: 'Classes begin', date: '2026-07-21' },
+      { label: 'Last working day', date: '2026-11-20' }
     ]
   }
 ];

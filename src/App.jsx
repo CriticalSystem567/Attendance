@@ -79,10 +79,20 @@ export default function App() {
         calYear: new Date().getFullYear(),
         calMonth: new Date().getMonth(),
         rollNumberBusy: false,
-        rollNumberError: ''
+        rollNumberError: '',
+        emailPromptBusy: false,
+        emailPromptError: '',
+        emailPromptSkipped: false,
+        timetablePreview: null
       };
 
       const bk = slug => `branch__${slug}__`;
+
+      function hasRealEmail() {
+        const email = STATE.session && STATE.session.user ? (STATE.session.user.email || '') : '';
+        return !!email && !email.endsWith('@dayorder.local');
+      }
+
 
       function currentUid() { return STATE.session && STATE.session.user ? STATE.session.user.id : null; }
       // A class can have multiple admins (the creator, plus anyone they
@@ -423,8 +433,18 @@ export default function App() {
           return;
         }
 
+        if (!hasRealEmail() && !STATE.emailPromptSkipped) {
+          root.innerHTML = renderAddEmailPrompt();
+          return;
+        }
+
         if (!STATE.profile.branch && !STATE.profile.rollNumberPromptDismissed) {
           root.innerHTML = renderRollNumberPrompt();
+          return;
+        }
+
+        if (STATE.timetablePreview) {
+          root.innerHTML = renderTimetablePreview();
           return;
         }
 
@@ -500,6 +520,45 @@ export default function App() {
         `;
       }
 
+      function renderAddEmailPrompt() {
+        return `
+          <div class="onboard-wrap">
+            <div class="onboard-logo"><img src="${logoUrl}" alt="" /></div>
+            <h1 class="onboard-title">Add a recovery email</h1>
+            <p class="onboard-sub">You don't have one on file yet. Without it, there's no way to reset your password if you forget it. It's never shown to classmates.</p>
+            <div class="field"><label>Email</label><input type="email" id="addEmailInput" placeholder="you@example.com" autocapitalize="off" autocorrect="off" spellcheck="false" ${STATE.emailPromptBusy ? 'disabled' : ''}></div>
+            ${STATE.emailPromptError ? `<div class="note-box" style="border-color:var(--absent);color:var(--absent);">${esc(STATE.emailPromptError)}</div>` : ''}
+            <button class="btn full" style="margin-top:14px;" data-action="submit-add-email" ${STATE.emailPromptBusy ? 'disabled' : ''}>${STATE.emailPromptBusy ? 'Sending…' : 'Add email'}</button>
+            <button class="btn secondary full" style="margin-top:10px;" data-action="skip-add-email">Skip for now</button>
+            <div class="version-tag">v${APP_VERSION}</div>
+          </div>
+        `;
+      }
+
+      function renderTimetablePreview() {
+        const p = STATE.timetablePreview;
+        const doKeys = Object.keys(STATE.common || {}).sort((a, b) => Number(a) - Number(b));
+        const rows = doKeys.map(doKey => {
+          const list = [
+            ...((STATE.common[doKey]) || []),
+            ...((STATE[STATE.profile.batch] && STATE[STATE.profile.batch][doKey]) || [])
+          ].sort((a, b) => a.start.localeCompare(b.start));
+          const cells = list.length
+            ? list.map(c => `<div class="log-row"><span>${c.start}–${c.end}</span><span style="font-weight:600;">${esc(c.subject)}</span></div>`).join('')
+            : `<div style="font-size:12px;color:var(--text-dim2);">No classes.</div>`;
+          return `<div class="card" style="margin-bottom:10px;"><div class="section-label" style="margin-top:0;">Day Order ${esc(doKey)}</div>${cells}</div>`;
+        }).join('');
+        return `
+          <div class="onboard-wrap">
+            <div class="onboard-logo"><img src="${logoUrl}" alt="" /></div>
+            <h1 class="onboard-title">${esc(p.presetName)}</h1>
+            <p class="onboard-sub">Here's the timetable we set up${p.studentName ? ` for ${esc(p.studentName)}` : ''}. Check it looks right.</p>
+            ${rows}
+            <button class="btn full" style="margin-top:14px;" data-action="confirm-timetable-preview">OK, looks good</button>
+          </div>
+        `;
+      }
+
       function renderAuthShell() {
         if (STATE.authMode === 'forgot') {
           return `
@@ -537,7 +596,7 @@ export default function App() {
             <p class="onboard-sub">${isLogin ? 'Log in to see your classes, attendance and assignments.' : 'Create an account to get started — your data follows you across devices.'}</p>
 
             <div class="field"><label>Username</label><input type="text" id="authUsername" placeholder="e.g. yogeswar_k" autocapitalize="off" autocorrect="off" spellcheck="false"></div>
-            ${!isLogin ? `<div class="field"><label>Email <span style="font-weight:400;color:var(--text-dim2);">(for password recovery only — never shown to classmates)</span></label><input type="email" id="authEmail" placeholder="you@example.com" autocapitalize="off" autocorrect="off" spellcheck="false"></div>` : ''}
+            ${!isLogin ? `<div class="field"><label>Email <span style="font-weight:400;color:var(--text-dim2);">(optional — for password recovery only, never shown to classmates)</span></label><input type="email" id="authEmail" placeholder="you@example.com (optional)" autocapitalize="off" autocorrect="off" spellcheck="false"></div>` : ''}
             <div class="field"><label>Password</label><input type="text" id="authPassword" placeholder="At least 6 characters" style="-webkit-text-security:disc;"></div>
             ${STATE.authError ? `<div class="note-box" style="border-color:var(--absent);color:var(--absent);">${esc(STATE.authError)}</div>` : ''}
 
@@ -667,6 +726,15 @@ export default function App() {
         return info.type === 'dayorder' ? `<div class="cal-do-badge">DO${info.value}</div>` : '';
       }
 
+      // Only renders anything if this date actually has an exam/CT override
+      // (auto-generated from the academic calendar's exam dates, or added
+      // manually in Setup) — ordinary days show nothing extra.
+      function calExamBadge(dateStr) {
+        if (!STATE.profile.branch || !STATE.config) return '';
+        const info = computeDayOrder(dateStr);
+        return info.examNote ? `<div class="cal-exam">${esc(info.examNote)}</div>` : '';
+      }
+
       function renderMiniMonth(year, month) {
         const startPad = new Date(year, month, 1).getDay();
         const total = daysInMonth(year, month);
@@ -738,6 +806,7 @@ export default function App() {
             <div class="cal-cell-lg ${kind ? 'cal-' + kind : ''} ${isToday ? 'cal-today' : ''}" data-action="cal-jump" data-date="${dateStr}">
               <div class="cal-daynum">${d}</div>
               ${hName ? `<div class="cal-hname">${esc(hName)}</div>` : ''}
+              ${calExamBadge(dateStr)}
               ${calDoBadge(dateStr)}
             </div>`;
         }
@@ -1329,11 +1398,11 @@ export default function App() {
           if (!username || !password) { STATE.authError = 'Enter your username and password.'; render(); return; }
           if (!isValidUsername(username)) { STATE.authError = 'Username should be 3–20 letters, numbers, underscores or dots.'; render(); return; }
           if (action === 'do-signup') {
-            if (!email || !isValidEmail(email)) { STATE.authError = 'Enter a valid email — it\'s only used if you ever need to reset your password.'; render(); return; }
+            if (email && !isValidEmail(email)) { STATE.authError = 'That doesn\'t look like a valid email — leave it blank to skip, or fix it.'; render(); return; }
             if (password.length < 6) { STATE.authError = 'Password should be at least 6 characters.'; render(); return; }
           }
           STATE.authBusy = true; STATE.authError = ''; render();
-          const { error } = action === 'do-login' ? await signIn(username, password) : await signUp(username, email, password);
+          const { error } = action === 'do-login' ? await signIn(username, password) : await signUp(username, password, email);
           STATE.authBusy = false;
           if (error) { STATE.authError = error.message; render(); return; }
           if (action === 'do-signup') { STATE.authError = 'Account created — log in with your new username.'; STATE.authMode = 'login'; render(); return; }
@@ -1539,20 +1608,45 @@ export default function App() {
           STATE.rollNumberBusy = true; STATE.rollNumberError = ''; render();
           try {
             STATE.profile.rollNumber = rollNumber.toUpperCase();
-            STATE.profile.rollNumberPromptDismissed = true;
             if (!STATE.profile.name) STATE.profile.name = match.name;
             await applyPreset(preset);
-            toast(`Welcome, ${match.name.split(' ')[0]} — ${preset.name} set up`);
-            STATE.tab = 'today';
+            // Don't dismiss the roll-number step or drop into the home
+            // screen yet — show a preview of the resulting timetable first
+            // and wait for explicit confirmation.
+            STATE.timetablePreview = { presetName: preset.name, studentName: match.name };
           } catch (err) {
             // eslint-disable-next-line no-console
             console.error('Roll number auto-assign failed:', err);
-            STATE.profile.rollNumberPromptDismissed = false;
             STATE.rollNumberError = "Couldn't set up your class — check your connection and try again.";
           } finally {
             STATE.rollNumberBusy = false;
             render();
           }
+        }
+        else if (action === 'confirm-timetable-preview') {
+          STATE.timetablePreview = null;
+          STATE.profile.rollNumberPromptDismissed = true;
+          await saveProfile();
+          const first = (STATE.profile.name || '').split(' ')[0];
+          toast(first ? `Welcome, ${first} — all set` : 'All set');
+          STATE.tab = 'today';
+          render();
+        }
+        else if (action === 'submit-add-email') {
+          const input = document.getElementById('addEmailInput');
+          const email = (input?.value || '').trim();
+          if (!email || !isValidEmail(email)) { STATE.emailPromptError = 'Enter a valid email.'; render(); return; }
+          STATE.emailPromptBusy = true; STATE.emailPromptError = ''; render();
+          const { error } = await addRecoveryEmail(email);
+          STATE.emailPromptBusy = false;
+          if (error) { STATE.emailPromptError = error.message || "Couldn't add that email."; render(); return; }
+          STATE.emailPromptSkipped = true;
+          toast("Check your inbox to confirm it");
+          render();
+        }
+        else if (action === 'skip-add-email') {
+          STATE.emailPromptSkipped = true;
+          render();
         }
         else if (action === 'skip-roll-number') {
           STATE.profile.rollNumberPromptDismissed = true;

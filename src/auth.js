@@ -38,31 +38,40 @@ async function lookupEmailForUsername(username) {
   return legacyEmail(clean); // pre-existing account, no real email on file yet
 }
 
-export async function signUp(username, email, password) {
+export async function signUp(username, password, email) {
   const clean = username.trim().toLowerCase();
   const { data: existing } = await supabase.from("usernames").select("username").eq("username", clean).maybeSingle();
   if (existing) return { error: { message: "That username is taken — try another one." } };
 
+  // Always register with the synthetic address. This is what makes login
+  // work immediately regardless of Supabase's "Confirm email" setting or
+  // whether any mail actually gets delivered.
   const result = await supabase.auth.signUp({
-    email: email.trim(),
+    email: legacyEmail(clean),
     password,
     options: { data: { username: clean } }
   });
-  if (result.error) {
-    if (/already registered|already exists/i.test(result.error.message || "")) {
-      result.error.message = "That email is already registered — try logging in, or use \"Forgot password\".";
-    }
-    return result;
-  }
+  if (result.error) return result;
+
   if (result.data.user) {
     const { error: mapError } = await supabase
       .from("usernames")
-      .insert({ username: clean, user_id: result.data.user.id, email: email.trim() });
+      .insert({ username: clean, user_id: result.data.user.id, email: legacyEmail(clean) });
     if (mapError) {
       // Very rare race (two people grabbed the same username at once).
       // The auth account exists but we couldn't claim the username — tell
       // them plainly rather than leaving it looking like a silent success.
       return { error: { message: "That username was just taken by someone else — try another one." } };
+    }
+
+    // Optional real email: kick off Supabase's own "confirm new email"
+    // flow right away. This never blocks login — the account keeps
+    // working with the synthetic address until (and unless) they click
+    // the confirmation link, at which point onAuthStateChange fires and
+    // finalizeRecoveryEmail() records the real address.
+    const trimmedEmail = (email || "").trim();
+    if (trimmedEmail) {
+      await supabase.auth.updateUser({ email: trimmedEmail });
     }
   }
   return result;
