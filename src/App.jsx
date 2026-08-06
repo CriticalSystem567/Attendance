@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { storageGet, storageSet, storageDelete } from "./storage.js";
 import {
-  signUp, signIn, signOut, getSession, onAuthStateChange, isValidUsername, isValidEmail, sessionUsername,
+  signUp, signIn, signOut, onAuthStateChange, isValidUsername, isValidEmail, sessionUsername,
   requestPasswordReset, updatePassword, addRecoveryEmail, finalizeRecoveryEmail
 } from "./auth.js";
 import { dayKind, holidayName } from "./holidays.js";
@@ -35,6 +35,54 @@ export default function App() {
       function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
       function cssSafe(s) { return String(s).replace(/[^a-zA-Z0-9]/g, '_'); }
       function emptyDOMap() { return { "1": [], "2": [], "3": [], "4": [], "5": [] }; }
+
+      // ---- Per-roll-number faculty assignment (e.g. Case Study, where the
+      // assigned faculty depends on the student's Register No. rather than
+      // being the same for the whole class). Admins type free-form rules
+      // into a class's "Faculty varies by roll number?" box, one per line:
+      //   RA2512008010001-RA2512008010015: Dr. Elangovan Elamurugu
+      //   RA2512008010016-042: Dr. Priyadarsini
+      //   RA2512008010042: Dr. Someone Else
+      // A range's second half can be shortened to just its trailing digits
+      // (as above) since both roll numbers usually share the same prefix.
+      function normalizeRoll(s) { return String(s || '').trim().toUpperCase(); }
+      function rollInRange(roll, from, to) {
+        if (!from || !to) return false;
+        if (to.length < from.length) to = from.slice(0, from.length - to.length) + to;
+        if (roll.length !== from.length) return false;
+        return roll >= from && roll <= to;
+      }
+      function parseFacultyRules(text) {
+        const rules = [];
+        (text || '').split('\n').forEach(line => {
+          const idx = line.lastIndexOf(':');
+          if (idx === -1) return;
+          const left = line.slice(0, idx).trim();
+          const faculty = line.slice(idx + 1).trim();
+          if (!left || !faculty) return;
+          left.split(',').forEach(tok => {
+            tok = tok.trim();
+            if (!tok) return;
+            const parts = tok.split('-').map(p => p.trim()).filter(Boolean);
+            if (parts.length === 2) rules.push({ from: normalizeRoll(parts[0]), to: normalizeRoll(parts[1]), faculty });
+            else rules.push({ from: normalizeRoll(tok), to: normalizeRoll(tok), faculty });
+          });
+        });
+        return rules;
+      }
+      // Returns the faculty name assigned to the CURRENT student for this
+      // class, or null if the class has no per-roll rules, the student has
+      // no roll number on file, or nothing matches.
+      function resolveFacultyForClass(cls) {
+        if (!cls || !cls.facultyByRoll) return null;
+        const roll = normalizeRoll(STATE.profile && STATE.profile.rollNumber);
+        if (!roll) return null;
+        const rules = parseFacultyRules(cls.facultyByRoll);
+        for (const r of rules) {
+          if (r.from === r.to ? roll === r.from : rollInRange(roll, r.from, r.to)) return r.faculty;
+        }
+        return null;
+      }
 
       const STATUS_META = {
         present: { label: 'Present', ic: '✓', color: 'var(--present)' },
@@ -73,6 +121,7 @@ export default function App() {
         tab: 'today',
         viewDate: todayStr(),
         setupDoTab: '1',
+        editingClass: null,
         creatingBranch: false,
         newBranchDraft: '',
         calMode: 'year',
@@ -371,22 +420,44 @@ export default function App() {
         render();
       }
 
+      // Duration of a class entry in hours, from its start/end times (e.g. "09:00"-"11:00" -> 2).
+      // Falls back to 1 hour if start/end are missing or malformed, so old entries keep working.
+      function entryHours(e) {
+        if (!e.start || !e.end) return 1;
+        const [sh, sm] = e.start.split(':').map(Number);
+        const [eh, em] = e.end.split(':').map(Number);
+        if ([sh, sm, eh, em].some(n => Number.isNaN(n))) return 1;
+        let mins = (eh * 60 + em) - (sh * 60 + sm);
+        if (mins <= 0) mins += 24 * 60; // guard against overnight/mis-entered times
+        return mins / 60;
+      }
+
       function subjectStats(subject) {
         const entries = Object.values(STATE.attendance).filter(e => e.subject === subject);
+        // counts: how many CLASS ENTRIES (sessions) fall into each status — used for the
+        // "✓ 1 present / ★ 1 OD" style chips, so those stay whole numbers.
         const counts = { present: 0, absent: 0, cancelled: 0, faculty_absent: 0, od: 0 };
         entries.forEach(e => counts[e.status] !== undefined && counts[e.status]++);
-        const P = counts.present, A = counts.absent, O = counts.od;
+        // P/A/O: attendance percentage is weighted by class DURATION (hours), not just entry
+        // count, so a 2-hour present class counts more than a 1-hour OD class.
+        let P = 0, A = 0, O = 0;
+        entries.forEach(e => {
+          const h = entryHours(e);
+          if (e.status === 'present') P += h;
+          else if (e.status === 'absent') A += h;
+          else if (e.status === 'od') O += h;
+        });
         const T = P + A + O;
         const pct = T > 0 ? (P / T * 100) : null;
         let advice = null, adviceType = 'neutral';
         if (T > 0) {
           if (pct >= 80) {
             const safeSkips = Math.floor(P / 0.8 - T);
-            advice = safeSkips > 0 ? `You can skip the next ${safeSkips} class${safeSkips > 1 ? 'es' : ''} and stay ≥80%.` : `You're right at the edge — skipping now drops you below 80%.`;
+            advice = safeSkips > 0 ? `You can skip the next ${safeSkips} hour${safeSkips > 1 ? 's' : ''} of class and stay ≥80%.` : `You're right at the edge — skipping now drops you below 80%.`;
             adviceType = 'good';
           } else {
             const needed = Math.max(0, Math.ceil(4 * T - 5 * P));
-            advice = `Attend the next ${needed} class${needed > 1 ? 'es' : ''} without missing any to reach 80%.`;
+            advice = `Attend the next ${needed} hour${needed > 1 ? 's' : ''} of class without missing any to reach 80%.`;
             adviceType = 'bad';
           }
         }
@@ -544,7 +615,7 @@ export default function App() {
             ...((STATE[STATE.profile.batch] && STATE[STATE.profile.batch][doKey]) || [])
           ].sort((a, b) => a.start.localeCompare(b.start));
           const cells = list.length
-            ? list.map(c => `<div class="log-row"><span>${c.start}–${c.end}</span><span style="font-weight:600;">${esc(c.subject)}</span></div>`).join('')
+            ? list.map(c => `<div class="log-row"><span>${c.start}–${c.end}</span><span style="font-weight:600;">${esc(c.subject)}${c.isLab ? ' 🧪' : ''}</span></div>`).join('')
             : `<div style="font-size:12px;color:var(--text-dim2);">No classes.</div>`;
           return `<div class="card" style="margin-bottom:10px;"><div class="section-label" style="margin-top:0;">Day Order ${esc(doKey)}</div>${cells}</div>`;
         }).join('');
@@ -693,7 +764,7 @@ export default function App() {
 
       function renderClassCard(dateStr, cls) {
         const status = getStatus(dateStr, cls.id);
-        const borderColor = status ? STATUS_META[status].color : 'var(--border)';
+        const borderColor = status ? STATUS_META[status].color : (cls.isLab ? 'var(--lab)' : 'var(--border)');
         const btns = Object.entries(STATUS_META).map(([key, meta]) => `
           <button class="status-btn ${status === key ? 'active' : ''}" data-action="mark" data-status="${key}"
             data-date="${dateStr}" data-classid="${cls.id}" data-subject="${esc(cls.subject)}" data-start="${cls.start}" data-end="${cls.end}">
@@ -705,10 +776,12 @@ export default function App() {
             <b>${stats.pct.toFixed(0)}%</b> attendance in ${esc(cls.subject)} —
             ${stats.adviceType === 'good' ? "you're in good shape, this one's skippable if you need to." : "this one matters, try not to miss it."}
           </div>` : '';
+        const facultyName = resolveFacultyForClass(cls);
+        const facultyNote = facultyName ? `<div class="faculty-note">👤 Your faculty: ${esc(facultyName)}</div>` : '';
         return `
-          <div class="class-card" style="border-left-color:${borderColor}">
+          <div class="class-card ${cls.isLab ? 'is-lab' : ''}" style="border-left-color:${borderColor}">
             <div class="class-top">
-              <div><div class="class-subject">${esc(cls.subject)}</div><div class="class-time">${cls.start} – ${cls.end}</div></div>
+              <div><div class="class-subject">${esc(cls.subject)}${cls.isLab ? '<span class="lab-badge">🧪 Lab</span>' : ''}</div><div class="class-time">${cls.start} – ${cls.end}</div>${facultyNote}</div>
               ${status ? `<div class="status-chip" style="background:${STATUS_META[status].color}22;color:${STATUS_META[status].color}">${STATUS_META[status].label}</div>` : ''}
             </div>
             ${attendanceNote}
@@ -1019,15 +1092,34 @@ export default function App() {
           ...STATE.batch1[doTab].map(c => ({ ...c, scope: 'batch1' })),
           ...STATE.batch2[doTab].map(c => ({ ...c, scope: 'batch2' }))
         ].sort((a, b) => a.start.localeCompare(b.start));
-        const classRows = rows.length ? rows.map(c => `
-          <div class="tt-row">
+        const editing = STATE.editingClass;
+        const classRows = rows.length ? rows.map(c => {
+          const isBeingEdited = editing && editing.scope === c.scope && editing.do === doTab && editing.id === c.id;
+          const myFaculty = resolveFacultyForClass(c);
+          return `
+          <div class="tt-row ${c.isLab ? 'is-lab' : ''} ${isBeingEdited ? 'is-editing' : ''}">
             <div class="tt-row-info">
-              <div class="n">${esc(c.subject)}</div>
+              <div class="n">${esc(c.subject)}${c.isLab ? '<span class="lab-badge">🧪 Lab</span>' : ''}</div>
               <div class="t">${c.start} – ${c.end}</div>
               <span class="scope-badge" style="background:${BATCH_META[c.scope].bg};color:${BATCH_META[c.scope].color}">${BATCH_META[c.scope].label}</span>
+              ${c.facultyByRoll ? `<div class="faculty-note">Faculty varies by roll no.${myFaculty ? ` — yours: ${esc(myFaculty)}` : ''}</div>` : ''}
             </div>
-            <button class="icon-btn" data-action="delete-class" data-scope="${c.scope}" data-do="${doTab}" data-id="${c.id}">✕</button>
-          </div>`).join('') : `<div style="font-size:12px;color:var(--text-dim2);padding:6px 0 12px;">No classes added for Day Order ${doTab} yet.</div>`;
+            <div class="tt-row-btns">
+              <button class="icon-btn" data-action="edit-class" data-scope="${c.scope}" data-do="${doTab}" data-id="${c.id}" title="Edit">✎</button>
+              <button class="icon-btn" data-action="delete-class" data-scope="${c.scope}" data-do="${doTab}" data-id="${c.id}" title="Delete">✕</button>
+            </div>
+          </div>`;
+        }).join('') : `<div style="font-size:12px;color:var(--text-dim2);padding:6px 0 12px;">No classes added for Day Order ${doTab} yet.</div>`;
+
+        // If we're editing an existing class in THIS Day Order tab, prefill
+        // the form with its current values and switch it into "save
+        // changes" mode instead of "add a new one".
+        let editVals = { subject: '', start: '', end: '', scope: 'common', isLab: false, facultyByRoll: '' };
+        if (editing && editing.do === doTab) {
+          const src = (STATE[editing.scope] && STATE[editing.scope][doTab] || []).find(c => c.id === editing.id);
+          if (src) editVals = { subject: src.subject, start: src.start, end: src.end, scope: editing.scope, isLab: !!src.isLab, facultyByRoll: src.facultyByRoll || '' };
+        }
+        const isEditingThisTab = !!(editing && editing.do === doTab);
 
         const pendingRequestsHtml = (isAdmin() && STATE.changeRequests.length) ? `
           <div class="section-label">Pending requests</div>
@@ -1129,19 +1221,29 @@ export default function App() {
             <div class="do-tabs">${doPills}</div>
             ${classRows}
             <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:14px;">
-              <div class="row2"><div class="field"><label>Subject</label><input type="text" id="clsSubject" placeholder="e.g. VLSI Testing"></div></div>
+              ${isEditingThisTab ? `<div class="note-box" style="margin-bottom:12px;">Editing <b>${esc(editVals.subject)}</b> — change the fields below and save, or cancel to leave it as is.</div>` : ''}
+              <div class="row2"><div class="field"><label>Subject</label><input type="text" id="clsSubject" value="${esc(editVals.subject)}" placeholder="e.g. VLSI Testing"></div></div>
               <div class="row2">
-                <div class="field"><label>Start time</label><input type="time" id="clsStart"></div>
-                <div class="field"><label>End time</label><input type="time" id="clsEnd"></div>
+                <div class="field"><label>Start time</label><input type="time" id="clsStart" value="${editVals.start}"></div>
+                <div class="field"><label>End time</label><input type="time" id="clsEnd" value="${editVals.end}"></div>
               </div>
               <div class="field"><label>Applies to</label>
                 <select id="clsScope">
-                  <option value="common">Everyone</option>
-                  <option value="batch1">Batch 1 only</option>
-                  <option value="batch2">Batch 2 only</option>
+                  <option value="common" ${editVals.scope === 'common' ? 'selected' : ''}>Everyone</option>
+                  <option value="batch1" ${editVals.scope === 'batch1' ? 'selected' : ''}>Batch 1 only</option>
+                  <option value="batch2" ${editVals.scope === 'batch2' ? 'selected' : ''}>Batch 2 only</option>
                 </select>
               </div>
-              <button class="btn full secondary" data-action="add-class">+ Add class to Day Order ${doTab}</button>
+              <label class="chk-inline"><input type="checkbox" id="clsIsLab" ${editVals.isLab ? 'checked' : ''}> This is a lab session (shown in a different colour)</label>
+              <label class="chk-inline"><input type="checkbox" id="clsFacultyVaries" ${editVals.facultyByRoll ? 'checked' : ''}> Faculty depends on Register No. (e.g. Case Study)</label>
+              <div class="field" id="clsFacultyWrap" style="display:${editVals.facultyByRoll ? 'block' : 'none'};margin-top:8px;">
+                <label>One rule per line — roll number or range, then a colon, then the faculty name</label>
+                <textarea class="facnote-input" id="clsFacultyByRoll" placeholder="RA2512008010001-015: Dr. Elangovan Elamurugu&#10;RA2512008010016-042: Dr. Priyadarsini">${esc(editVals.facultyByRoll)}</textarea>
+              </div>
+              <div style="display:flex;gap:8px;margin-top:14px;">
+                <button class="btn full secondary" data-action="add-class">${isEditingThisTab ? 'Save changes' : `+ Add class to Day Order ${doTab}`}</button>
+                ${isEditingThisTab ? `<button class="btn full" data-action="cancel-edit-class" style="flex:0 0 auto;">Cancel</button>` : ''}
+              </div>
             </div>
           </div>
         `;
@@ -1499,21 +1601,62 @@ export default function App() {
           await saveConfig();
           render();
         }
-        else if (action === 'set-do-tab') { STATE.setupDoTab = el.dataset.do; render(); }
+        else if (action === 'set-do-tab') { STATE.setupDoTab = el.dataset.do; STATE.editingClass = null; render(); }
+        else if (action === 'edit-class') {
+          STATE.editingClass = { scope: el.dataset.scope, do: el.dataset.do, id: el.dataset.id };
+          render();
+        }
+        else if (action === 'cancel-edit-class') {
+          STATE.editingClass = null;
+          render();
+        }
         else if (action === 'add-class') {
           ensurePersonal();
           const subject = document.getElementById('clsSubject').value.trim();
           const start = document.getElementById('clsStart').value;
           const end = document.getElementById('clsEnd').value;
           const scope = document.getElementById('clsScope').value;
+          const isLab = document.getElementById('clsIsLab').checked;
+          const facultyVaries = document.getElementById('clsFacultyVaries').checked;
+          const facultyByRoll = facultyVaries ? document.getElementById('clsFacultyByRoll').value.trim() : '';
           if (!subject || !start || !end) { toast('Fill subject, start & end time'); return; }
           if (end <= start) { toast('End time must be after start time'); return; }
           const doTab = STATE.setupDoTab;
-          STATE[scope][doTab].push({ id: uid(), subject, start, end });
+          const editing = STATE.editingClass;
+
+          if (editing && editing.do === doTab) {
+            // Editing an existing class in place. If "Applies to" changed,
+            // move the entry to the new scope's list instead of leaving a
+            // stale copy behind in the old one.
+            const oldList = STATE[editing.scope][doTab];
+            const idx = oldList.findIndex(c => c.id === editing.id);
+            if (idx === -1) { toast("Couldn't find that class anymore"); STATE.editingClass = null; render(); return; }
+            const updated = { ...oldList[idx], subject, start, end, isLab };
+            if (facultyByRoll) updated.facultyByRoll = facultyByRoll; else delete updated.facultyByRoll;
+            if (editing.scope === scope) {
+              oldList[idx] = updated;
+              await saveCollection(scope);
+            } else {
+              oldList.splice(idx, 1);
+              STATE[scope][doTab].push(updated);
+              await saveCollection(editing.scope);
+              await saveCollection(scope);
+            }
+            STATE.editingClass = null;
+            toast('Class updated');
+            render();
+            return;
+          }
+
+          const newClass = { id: uid(), subject, start, end, isLab };
+          if (facultyByRoll) newClass.facultyByRoll = facultyByRoll;
+          STATE[scope][doTab].push(newClass);
           await saveCollection(scope);
           document.getElementById('clsSubject').value = '';
           document.getElementById('clsStart').value = '';
           document.getElementById('clsEnd').value = '';
+          document.getElementById('clsIsLab').checked = false;
+          document.getElementById('clsFacultyVaries').checked = false;
           toast('Class added');
           render();
         }
@@ -1521,7 +1664,12 @@ export default function App() {
           ensurePersonal();
           const list = STATE[el.dataset.scope][el.dataset.do];
           const idx = list.findIndex(c => c.id === el.dataset.id);
-          if (idx > -1) { list.splice(idx, 1); await saveCollection(el.dataset.scope); render(); }
+          if (idx > -1) {
+            list.splice(idx, 1);
+            if (STATE.editingClass && STATE.editingClass.id === el.dataset.id) STATE.editingClass = null;
+            await saveCollection(el.dataset.scope);
+            render();
+          }
         }
 
         else if (action === 'assign-toggle') {
@@ -1825,6 +1973,10 @@ export default function App() {
           document.getElementById('ovValueWrap').style.display = e.target.value === 'dayorder' ? 'block' : 'none';
           document.getElementById('ovExamNoteWrap').style.display = e.target.value === 'exam' ? 'block' : 'none';
         }
+        if (e.target.id === 'clsFacultyVaries') {
+          const wrap = document.getElementById('clsFacultyWrap');
+          if (wrap) wrap.style.display = e.target.checked ? 'block' : 'none';
+        }
       });
 
       /* ---------- boot ---------- */
@@ -1908,12 +2060,18 @@ export default function App() {
         STATE.canInstall = false;
       });
 
-      (async function init() {
-        const session = await getSession();
-        STATE.session = session;
-        if (session) await bootSession();
-        else render();
-
+      (function init() {
+        // Subscribe BEFORE ever touching the session. Supabase parses any
+        // #access_token=...&type=recovery fragment in the URL as soon as
+        // the client loads and fires the PASSWORD_RECOVERY event right
+        // away — if we call getSession() first (which also resolves that
+        // same fragment) and only subscribe afterwards, the event has
+        // already fired with nobody listening, and the recovery session
+        // gets treated as a normal login instead of showing the reset
+        // screen. Subscribing first, and relying on the automatic
+        // INITIAL_SESSION event (fired immediately with the current
+        // session, or null) instead of a manual getSession() call, closes
+        // that race.
         onAuthStateChange(async (session, event) => {
           if (event === 'PASSWORD_RECOVERY') {
             // Supabase signs them into a temporary recovery session when
@@ -1939,6 +2097,8 @@ export default function App() {
             resetLocalState();
             STATE.authMode = 'login';
             STATE.authError = '';
+            render();
+          } else if (!session) {
             render();
           }
         });

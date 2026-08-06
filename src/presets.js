@@ -28,22 +28,36 @@ export const PRESETS = [
     // Anchor: Monday, 3 Aug 2026 is Day Order 5.
     startDate: '2026-08-03',
     startDayOrder: 5,
-    // Single batch this semester — the official sheet only showed one
-    // schedule (no B1/B2 split in the grid itself). The handwritten note
-    // "B1 - E slot D3:3.10 to 4 and DOS: 8-9.40" on the sheet suggests a
-    // possible batch-specific override for Case Study, NOT yet applied
-    // here — flag when you confirm what it means and this can be added
-    // as a B1-only override.
-    batches: [],
-    // Still waiting on the actual weekly grid (which period holds which
-    // subject on each Day Order) — the academic-calendar doc gave subjects,
-    // faculty and timings but not the period-by-Day-Order placement.
+    // Single batch overall, but Case Study (21EEC607) has a B1-only slot
+    // per the handwritten note on the sheet: "B1 - E slot D4:3.10 to 4 and
+    // DO5: 8-9.40". Applied below as a batch1 override on Day Order 4
+    // (period 9, closest slot to 15:10-16:00) and Day Order 5 (periods
+    // 1-2, 08:00-09:40). Re-check against the official sheet if the exact
+    // period boundaries turn out to differ.
+    batches: ['batch1'],
+    // Still waiting on the full weekly grid for the other 4 subjects
+    // (which period holds which subject on each Day Order) — the
+    // academic-calendar doc gave subjects, faculty and timings but not
+    // the period-by-Day-Order placement. Only Case Study is placed below.
     dayOrderTimetable: {
       '1': { common: [] },
       '2': { common: [] },
       '3': { common: [] },
-      '4': { common: [] },
-      '5': { common: [] }
+      '4': { common: [], B1: [[9, '21EEC607']] },
+      '5': { common: [], B1: [[1, '21EEC607'], [2, '21EEC607']] }
+    },
+    // Per-roll-number faculty for subjects whose faculty isn't fixed for
+    // the whole class. Keyed by subject code — carried onto every class
+    // row generated for that subject (see buildPresetTimetable below),
+    // and read by resolveFacultyForClass()/the "Faculty depends on
+    // Register No." UI in App.jsx. One rule per line: roll (or a
+    // contiguous roll range) + ":" + faculty name.
+    facultyByRoll: {
+      '21EEC607':
+        'RA2512008010001-010: Dr.A.Maria Jossy\n' +
+        'RA2512008010011-020: Dr.R.Prithiviraj\n' +
+        'RA2512008010021-030: Dr.S.Lokesh\n' +
+        'RA2512008010031-042: Dr.S.Yuvaraj'
     },
     // Semester dates confirmed; no exam/CT dates given yet — add them here
     // (label starting "CT-" for a Cycle Test, or "exam"/"FT-"/"CA-") once
@@ -74,11 +88,14 @@ export function buildPresetTimetable(preset) {
         const code = cell.replace(/\(LAB\)/i, '').trim();
         const name = preset.subjects[code] || code;
         const [start, end] = preset.timeSlots[slotNum - 1].split('-');
+        const facultyByRoll = (preset.facultyByRoll || {})[code];
         result[target][doKey].push({
           id: `${preset.slug}-do${doKey}-${scopeKey}-${slotNum}`,
           subject: name + (isLab ? ' (Lab)' : ''),
           start,
-          end
+          end,
+          isLab,
+          ...(facultyByRoll ? { facultyByRoll } : {})
         });
       });
     });
