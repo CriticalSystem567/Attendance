@@ -153,7 +153,7 @@ main{flex:1;padding:6px 20px 20px;}
 .ring-meta-sub{font-size:12.5px;color:var(--text-dim);margin-top:3px;line-height:1.4;}
 
 .class-card{border-radius:var(--radius);border:1px solid var(--border);background:var(--card);padding:14px 16px;margin-bottom:10px;border-left:3px solid var(--border);}
-.class-card.is-lab{background:linear-gradient(to right, var(--lab-dim), var(--card) 22%);}
+.class-card.is-lab{background:linear-gradient(to right, var(--lab-dim), var(--card) 22%);border-left-width:4px;}
 .class-top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:12px;}
 .class-subject{font-family:'Space Grotesk';font-weight:600;font-size:15px;}
 .class-time{font-size:12px;color:var(--text-dim);margin-top:2px;font-family:'JetBrains Mono';}
@@ -307,6 +307,9 @@ textarea:focus{outline:none;border-color:var(--accent);}
 .cal-dot-holiday{background:var(--holiday);box-shadow:0 0 8px rgba(240,84,106,0.55);}
 .cal-dot-weekend{background:var(--weekend);box-shadow:0 0 8px rgba(245,185,66,0.5);}
 .cal-dot-today{background:var(--accent);box-shadow:0 0 8px rgba(67,217,200,0.6);}
+.cal-dot-lab{background:var(--lab);box-shadow:0 0 8px rgba(255,138,61,0.55);}
+.day-legend{display:flex;flex-wrap:wrap;gap:14px;margin:8px 2px 12px;}
+.day-legend-item{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-dim);font-weight:600;}
 
 /* Single responsive grid: 1 month per row on narrow phones, and it
    naturally reflows to 2/3/4 per row as the viewport (or .app max-width)

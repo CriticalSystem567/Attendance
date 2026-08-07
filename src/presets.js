@@ -14,9 +14,9 @@ export const PRESETS = [
     name: 'M.Tech - VLSI - 3rd Sem',
     subjects: {
       '21ENC367': 'Characterisation of Semiconductor Materials and Devices — Dr. Elangovan Elamurugu, TP1511',
-      '21NEE361': 'Reliability Engineering — Dr. Priyadarsini, TP1502',
+      '21NEE361': 'Reliability Engineering of IC Technology — Dr. Inamul Hussain, TP1502',
       '21ENC365': 'Reliability Engineering Technology — Various Faculty, TP1512',
-      '21EEC607': 'Case Study — faculty depends on registration number',
+      '21ECC601T': 'Case Study — faculty depends on registration number',
       '21NET611': 'Characterisation of Semiconductor Materials and Devices Lab — Dr. Elangovan Elamurugu, Immersive Nano Fabrication Lab'
     },
     // 10 real class periods — per the official timetable, Period 6
@@ -28,23 +28,27 @@ export const PRESETS = [
     // Anchor: Monday, 3 Aug 2026 is Day Order 5.
     startDate: '2026-08-03',
     startDayOrder: 5,
-    // Single batch overall, but Case Study (21EEC607) has a B1-only slot
-    // per the handwritten note on the sheet: "B1 - E slot D4:3.10 to 4 and
-    // DO5: 8-9.40". Applied below as a batch1 override on Day Order 4
-    // (period 9, closest slot to 15:10-16:00) and Day Order 5 (periods
-    // 1-2, 08:00-09:40). Re-check against the official sheet if the exact
-    // period boundaries turn out to differ.
+    // Case Study (21ECC601T) is B1-only, per the official course sheet:
+    // "Slot: B1 – E Slot. Schedule: Day Order 4: 3:10 PM – 4:00 PM,
+    // Day Order 5: 8:00 AM – 9:40 AM." Day Order 4 uses an exact
+    // {start,end} (doesn't line up with the standard period grid); Day
+    // Order 5 lines up exactly with periods 1-2 (08:00-09:40).
+    // Reliability Engineering of IC Technology (21NEE361) lab is on Day
+    // Order 4, 9:45 AM – 11:30 AM, common to both batches.
     batches: ['batch1'],
-    // Still waiting on the full weekly grid for the other 4 subjects
+    // Still waiting on the full weekly grid for the other 3 subjects
     // (which period holds which subject on each Day Order) — the
     // academic-calendar doc gave subjects, faculty and timings but not
-    // the period-by-Day-Order placement. Only Case Study is placed below.
+    // the period-by-Day-Order placement for lecture (non-lab) sessions.
     dayOrderTimetable: {
       '1': { common: [] },
       '2': { common: [] },
       '3': { common: [] },
-      '4': { common: [], B1: [[9, '21EEC607']] },
-      '5': { common: [], B1: [[1, '21EEC607'], [2, '21EEC607']] }
+      '4': {
+        common: [[{ start: '09:45', end: '11:30' }, '21NEE361(LAB)']],
+        B1: [[{ start: '15:10', end: '16:00' }, '21ECC601T']]
+      },
+      '5': { common: [], B1: [[1, '21ECC601T'], [2, '21ECC601T']] }
     },
     // Per-roll-number faculty for subjects whose faculty isn't fixed for
     // the whole class. Keyed by subject code — carried onto every class
@@ -53,7 +57,7 @@ export const PRESETS = [
     // Register No." UI in App.jsx. One rule per line: roll (or a
     // contiguous roll range) + ":" + faculty name.
     facultyByRoll: {
-      '21EEC607':
+      '21ECC601T':
         'RA2512008010001-010: Dr.A.Maria Jossy\n' +
         'RA2512008010011-020: Dr.R.Prithiviraj\n' +
         'RA2512008010021-030: Dr.S.Lokesh\n' +
@@ -82,15 +86,25 @@ export function buildPresetTimetable(preset) {
     Object.keys(scopes).forEach(scopeKey => {
       const target = scopeMap[scopeKey];
       if (!target) return;
-      scopes[scopeKey].forEach(([slotNum, cell]) => {
+      scopes[scopeKey].forEach(([slot, cell]) => {
         if (!cell) return;
         const isLab = /\(LAB\)/i.test(cell);
         const code = cell.replace(/\(LAB\)/i, '').trim();
         const name = preset.subjects[code] || code;
-        const [start, end] = preset.timeSlots[slotNum - 1].split('-');
+        // slot is normally a 1-indexed number into preset.timeSlots (the
+        // standard ~50min period grid). For sessions that don't line up
+        // with that grid (e.g. a lab block, or a slot with an exact time
+        // from the official timetable), pass { start, end } directly instead.
+        let start, end, slotKey;
+        if (slot && typeof slot === 'object') {
+          start = slot.start; end = slot.end; slotKey = `${start}-${end}`;
+        } else {
+          [start, end] = preset.timeSlots[slot - 1].split('-');
+          slotKey = slot;
+        }
         const facultyByRoll = (preset.facultyByRoll || {})[code];
         result[target][doKey].push({
-          id: `${preset.slug}-do${doKey}-${scopeKey}-${slotNum}`,
+          id: `${preset.slug}-do${doKey}-${scopeKey}-${slotKey}`,
           subject: name + (isLab ? ' (Lab)' : ''),
           start,
           end,

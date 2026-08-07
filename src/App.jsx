@@ -706,7 +706,7 @@ export default function App() {
         const d = STATE.viewDate;
         const doInfo = computeDayOrder(d);
         const isToday = d === todayStr();
-        let ringHtml, metaHtml, classesHtml;
+        let ringHtml, metaHtml, classesHtml, classes = [];
 
         if (doInfo.type === 'dayorder') {
           const segStops = [];
@@ -716,7 +716,7 @@ export default function App() {
             segStops.push(`${filled ? 'var(--accent)' : 'rgba(255,255,255,0.12)'} ${s}deg ${ce}deg`, `transparent ${ce}deg ${ge}deg`);
           }
           ringHtml = `<div class="do-ring" style="background:conic-gradient(${segStops.join(',')})"><div class="do-ring-inner"><div class="do-ring-num">${doInfo.value}</div><div class="do-ring-label">of 5</div></div></div>`;
-          const classes = getClassesForDO(doInfo.value);
+          classes = getClassesForDO(doInfo.value);
           const marked = classes.filter(c => getStatus(d, c.id)).length;
           const ctNote = doInfo.examNote ? `<div class="ct-note">📝 ${esc(doInfo.examNote)} today — classes run as usual afterwards.</div>` : '';
           metaHtml = `<div class="ring-meta"><div class="ring-meta-title">Day Order ${doInfo.value}</div><div class="ring-meta-sub">${classes.length} class${classes.length !== 1 ? 'es' : ''} scheduled${classes.length ? ` · ${marked}/${classes.length} marked` : ''}</div>${ctNote}</div>`;
@@ -758,6 +758,7 @@ export default function App() {
           </div>
           <div class="card ring-card">${ringHtml}${metaHtml}</div>
           <div class="section-label">Classes</div>
+          ${classes.some(c => c.isLab) ? `<div class="day-legend"><span class="day-legend-item"><i class="cal-dot cal-dot-lab"></i>🧪 Lab session</span></div>` : ''}
           ${classesHtml}
         `;
       }
@@ -1092,6 +1093,7 @@ export default function App() {
           ...STATE.batch1[doTab].map(c => ({ ...c, scope: 'batch1' })),
           ...STATE.batch2[doTab].map(c => ({ ...c, scope: 'batch2' }))
         ].sort((a, b) => a.start.localeCompare(b.start));
+        const ttLegend = rows.some(c => c.isLab) ? `<div class="day-legend"><span class="day-legend-item"><i class="cal-dot cal-dot-lab"></i>🧪 Lab session</span></div>` : '';
         const editing = STATE.editingClass;
         const classRows = rows.length ? rows.map(c => {
           const isBeingEdited = editing && editing.scope === c.scope && editing.do === doTab && editing.id === c.id;
@@ -1219,6 +1221,7 @@ export default function App() {
           <div class="section-label">Weekly timetable</div>
           <div class="card">
             <div class="do-tabs">${doPills}</div>
+            ${ttLegend}
             ${classRows}
             <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:14px;">
               ${isEditingThisTab ? `<div class="note-box" style="margin-bottom:12px;">Editing <b>${esc(editVals.subject)}</b> — change the fields below and save, or cancel to leave it as is.</div>` : ''}
